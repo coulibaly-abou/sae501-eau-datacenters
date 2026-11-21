@@ -17,6 +17,14 @@ renderPlotly <- function(expr, env = parent.frame(), quoted = FALSE) {
 
 d <- readRDS("app_data.rds")
 wue <- d$wue
+sf::sf_use_s2(FALSE)
+CENTRES <- {
+  pt <- suppressWarnings(sf::st_coordinates(sf::st_point_on_surface(d$monde)))
+  base <- tibble(iso3 = d$monde$iso3, lon = pt[, 1], lat = pt[, 2])
+  med <- d$osm |> group_by(iso3) |> summarise(lon_s = median(lon), lat_s = median(lat), n = n(), .groups = "drop")
+  base |> left_join(med, by = "iso3") |> transmute(iso3, lon = ifelse(!is.na(n) & n >= 3, lon_s, lon), lat = ifelse(!is.na(n) & n >= 3, lat_s, lat))
+}
+sf::sf_use_s2(TRUE)
 CHOIX_PAYS <- c("Monde entier" = "MONDE", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)])
 
 # ------------------------------------------------------------- Constantes ----
@@ -37,12 +45,18 @@ LEG <- list(orientation = "h", x = 0, y = 1.12)
 
 calculer <- function(w, scenario, horizon) {
   p <- d$pays
-  if (horizon == 2024) p$f <- 1 else
-    p <- p |> left_join(d$scen_zone |> filter(scenario == !!scenario, horizon == !!horizon) |> select(zone, f = f_zone), by = "zone")
+  if (horizon <= 2024) p$f <- 1 else {
+    fz <- d$scen_zone |> filter(scenario == !!scenario) |> select(zone, horizon, f_zone) |>
+      pivot_wider(names_from = horizon, values_from = f_zone, names_prefix = "f")
+    fz$f <- if (horizon <= 2030) 1 + (fz$f2030 - 1) * (horizon - 2024) / 6 else fz$f2030 + (fz$f2035 - fz$f2030) * (horizon - 2030) / 5
+    p <- p |> left_join(fz |> select(zone, f), by = "zone")
+  }
   p |> mutate(e_h = e0 * f,
               e_ia = d$part_ia[["monde"]] * e0 + d$part_ia[["hausse"]] * (e_h - e0),
               eau = e_h * w, eau_ia = e_ia * w,
               part = 100 * eau / (prelev0 * 1e3),
+              part_bas = 100 * e_h * wue[["bas"]] / (prelev0 * 1e3),
+              part_haut = 100 * e_h * wue[["haut"]] / (prelev0 * 1e3),
               eau_menages = prelev0 * 1e3 * pct_menages / 100,
               ratio_menages = 100 * eau / eau_menages,
               stress_h = stress0 * (1 + (eau - e0 * w) / (prelev0 * 1e3)),
@@ -107,6 +121,35 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .fiche dt{font-weight:500;color:#666;font-size:.9rem;} .fiche dd{font-size:1.1rem;margin-bottom:.5rem;}
     .fiche .equiv{font-size:.85rem;color:#777;}
     .barre-carte .shiny-input-container{margin-bottom:0 !important;}
+    /* Carte : parcours en 4 étapes */
+    .parcours .shiny-options-group{display:flex;flex-wrap:wrap;gap:6px;}
+    .parcours .radio-inline, .parcours .form-check-inline{margin:0 !important;padding:0 !important;}
+    .parcours input[type=radio]{position:absolute;opacity:0;pointer-events:none;}
+    .parcours label span, .parcours .form-check-label{display:inline-block;padding:.42rem .85rem;border-radius:10px;border:2px solid #1f6f8b;font-size:.92rem;white-space:nowrap;
+      color:#1f6f8b;font-weight:600;cursor:pointer;background:#fff;transition:all .15s;}
+    .parcours input:checked + span, .parcours input:checked + .form-check-label{background:#1f6f8b;color:#fff;box-shadow:0 3px 10px rgba(31,111,139,.3);}
+    .etape-texte{display:flex;gap:12px;align-items:flex-start;background:#f4f8fa;border-left:4px solid #1f6f8b;border-radius:8px;
+      padding:10px 14px;margin:10px 0 12px;font-size:.98rem;}
+    .etape-num{flex:0 0 32px;height:32px;border-radius:50%;background:#1f6f8b;color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;}
+    .leg-bulle{background:rgba(255,255,255,.9);padding:6px 10px;border-radius:6px;font-size:.8rem;line-height:1.2;}
+    .leg-bulle .rond{display:inline-block;width:14px;height:14px;border-radius:50%;background:#1f4e8b;opacity:.7;vertical-align:middle;}
+    .etiq-surv{font-weight:800;color:#c0392b;text-shadow:0 0 3px #fff,0 0 3px #fff;font-size:12px;}
+    /* Fiche */
+    .chiffres-fiche{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;text-align:center;font-size:.8rem;color:#666;}
+    .chiffres-fiche .n{font-size:1.25rem;font-weight:800;color:#1f6f8b;}
+    .fiche-sous{font-weight:600;font-size:.85rem;color:#444;margin:10px 0 6px;}
+    .jauge-titre{font-weight:600;font-size:.85rem;color:#444;margin-bottom:6px;}
+    .jauge-barre{position:relative;display:flex;height:12px;border-radius:6px;overflow:visible;margin:22px 0 4px;}
+    .jauge-barre .z1{flex:0 0 50%;background:#a6d96a;border-radius:6px 0 0 6px;} .jauge-barre .z2{flex:0 0 25%;background:#fee08b;}
+    .jauge-barre .z3{flex:0 0 25%;background:#f46d43;border-radius:0 6px 6px 0;}
+    .jauge-curseur{position:absolute;top:-6px;width:4px;height:24px;background:#123f52;border-radius:2px;transform:translateX(-2px);}
+    .jauge-curseur span{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-weight:800;font-size:.85rem;color:#123f52;white-space:nowrap;}
+    .jauge-lib{display:flex;justify-content:space-between;font-size:.72rem;color:#888;}
+    .litre{display:grid;grid-template-columns:90px 1fr 62px;align-items:center;gap:6px;font-size:.82rem;margin:3px 0;}
+    .litre .barre{background:#eef2f4;border-radius:4px;height:10px;} .litre .barre div{height:10px;border-radius:4px;background:#1f6f8b;}
+    .litre .val{text-align:right;font-weight:600;} .litre.dc .barre div{background:#d35400;} .litre.dc{color:#d35400;font-weight:700;}
+    .mode-emploi div{margin:6px 0;font-size:.9rem;} .mode-emploi .bi{color:#1f6f8b;}
+    .comparaison table{font-size:.82rem;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
     body.sur-accueil .bslib-sidebar-layout > .sidebar,
     body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
@@ -150,11 +193,12 @@ ui <- page_navbar(
   window_title = "L'eau des data centers - SAÉ 5.EMS.01",
   sidebar = sidebar(id = "sb", width = 260, open = "closed",
     h6(bs_icon("sliders"), " Hypothèses"),
-    radioButtons("horizon", "Année", c("2024" = 2024, "2030" = 2030, "2035" = 2035), 2024, inline = TRUE),
-    conditionalPanel("input.horizon != '2024'",
+    sliderInput("horizon", "Année", min = 2024, max = 2035, value = 2024, step = 1, sep = "", ticks = FALSE,
+                animate = animationOptions(interval = 2200, loop = FALSE)),
+    conditionalPanel("input.horizon > 2024",
       radioButtons("scen", "Croissance des data centers", c("Lente" = "bas", "Centrale" = "central", "Rapide" = "haut"), "central")),
     radioButtons("coef", "Eau utilisée par kWh", c("Basse : 0,21 L" = "bas", "Moyenne : 0,81 L" = "central", "Haute : 2,41 L" = "haut"), "central"),
-    div(class = "small text-muted", "La valeur moyenne sert de référence. Tous les chiffres se mettent à jour.")),
+    div(class = "small text-muted", "▶ fait défiler les années. Entre 2024, 2030 et 2035 (scénarios AIE), les valeurs sont interpolées.")),
 
   # ---- Accueil
   nav_panel("Accueil", value = "Accueil", icon = bs_icon("house"),
@@ -194,17 +238,20 @@ ui <- page_navbar(
     layout_columns(col_widths = c(8, 4),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
-          span(class = "titre-bloc", "Où sont les data centers, et combien d'eau utilisent-ils ?"),
+          span(class = "titre-bloc", "La carte de l'étude en 4 étapes"),
           selectInput("pays_sel", NULL, width = "210px", CHOIX_PAYS, "MONDE")),
-        div(class = "barre-carte px-3 pt-3 pb-2",
-          selectInput("var_carte", NULL, width = "100%", c(
-            "Couleur : part de l'eau du pays utilisée par les data centers" = "part",
-            "Couleur : eau utilisée par les data centers" = "eau",
-            "Couleur : nombre de data centers" = "n_dc",
-            "Couleur : manque d'eau du pays (stress hydrique)" = "stress0"))),
-        leafletOutput("carte", height = "540px"),
-        card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("carte_retenir", inline = TRUE))),
-      card(card_header(span(class = "titre-bloc", bs_icon("card-text"), " Fiche")), uiOutput("fiche"))
+        div(class = "parcours px-3 pt-3",
+          radioButtons("etape", NULL, inline = TRUE, selected = "1",
+            c("① Où sont-ils ?" = "1", "② Combien d'eau ?" = "2", "③ Où l'eau manque ?" = "3", "④ Où ça coince ?" = "4"))),
+        div(class = "px-3", uiOutput("etape_texte")),
+        leafletOutput("carte", height = "520px")),
+      card(card_header(class = "d-flex justify-content-between align-items-center",
+                       span(class = "titre-bloc", bs_icon("card-text"), " Fiche"),
+                       selectInput("pays_comp", NULL, width = "170px", c("Comparer avec…" = "", CHOIX_PAYS[-1]))),
+           uiOutput("fiche"),
+           conditionalPanel("input.pays_sel != 'MONDE'",
+             div(class = "px-3 pb-2", div(class = "fiche-sous", "Pluie et température, mois par mois"),
+                 plotlyOutput("fiche_clim", height = "150px"))))
     )
   ),
 
@@ -367,37 +414,75 @@ server <- function(input, output, session) {
     if (!is.null(id) && id %in% d$pays$iso3) updateSelectInput(session, "pays_sel", selected = id)
   })
 
-  # ---------- Carte du monde
-  bins <- list(part = c(0, 0.001, 0.01, 0.05, 0.1, 0.5, 1, Inf), eau = c(0, 0.1, 1, 5, 20, 50, Inf),
-               n_dc = c(0, 5, 20, 50, 100, 300, Inf), stress0 = c(0, 25, 50, 75, 100, Inf))
-  unite <- c(part = "% de l'eau du pays", eau = "millions de m³", n_dc = "data centers", stress0 = "stress hydrique (%)")
-  pal_v <- c(part = "YlGnBu", eau = "Blues", n_dc = "Purples", stress0 = "YlOrRd")
+  # ---------- Carte du monde : parcours en 4 étapes
+  bins <- list(part = c(0, 0.001, 0.01, 0.05, 0.1, 0.5, 1, Inf), n_dc = c(0, 5, 20, 50, 100, 300, Inf),
+               stress0 = c(0, 25, 50, 75, 100, Inf))
+  titre_leg <- c(n_dc = "Nombre de data centers", part = "Part de l'eau du pays<br>utilisée par les data centers",
+                 stress0 = "Manque d'eau du pays<br>(stress hydrique)")
+  lab_bins <- list(n_dc = c("1 – 5", "5 – 20", "20 – 50", "50 – 100", "100 – 300", "300 et plus"),
+                   part = c("moins de 0,001 %", "0,001 – 0,01 %", "0,01 – 0,05 %", "0,05 – 0,1 %", "0,1 – 0,5 %", "0,5 – 1 %", "plus de 1 %"),
+                   stress0 = c("aucun (< 25 %)", "faible (25-50 %)", "moyen (50-75 %)", "élevé (75-100 %)", "critique (> 100 %)"))
+  pal_v <- c(n_dc = "Purples", part = "YlGnBu", stress0 = "YlOrRd")
+  var_etape <- reactive(switch(input$etape, "1" = "n_dc", "2" = "part", "stress0"))
+
   output$carte <- renderLeaflet({
-    v <- input$var_carte; iso <- input$pays_sel
-    m <- d$monde |> left_join(res() |> mutate(val = .data[[v]]) |> select(iso3, country, val), by = "iso3")
-    pal <- colorBin(pal_v[[v]], domain = m$val, bins = bins[[v]], na.color = "#e8e8e8")
-    lab <- sprintf("<b>%s</b><br>%s : %s", ifelse(is.na(m$country), "Pas de data center recensé", m$country), unite[[v]],
-                   ifelse(is.na(m$val), "n.d.", fmt(m$val, ifelse(v %in% c("n_dc", "stress0"), 0, 2)))) |> lapply(htmltools::HTML)
-    l <- leaflet(m, options = leafletOptions(worldCopyJump = TRUE, minZoom = 1, zoomSnap = 0.25)) |>
+    v <- var_etape(); iso <- input$pays_sel; et <- input$etape
+    r <- res()
+    m <- d$monde |> left_join(r |> mutate(val = .data[[v]]) |> select(iso3, country, val, n_dc, eau, part, part_bas, part_haut, stress0),
+                              by = "iso3")
+    pal <- colorBin(pal_v[[v]], domain = NULL, bins = bins[[v]], na.color = "#c9c9c9")
+    dans <- m$iso3 %in% d$pays$iso3
+    remplissage <- ifelse(!dans, "#f4f4f4", ifelse(is.na(m$val), "#c9c9c9", pal(m$val)))
+    surv <- arb() |> filter(signaux >= 2) |> pull(iso3)
+    opa <- if (iso != "MONDE") 0.45 else if (et == "4") ifelse(m$iso3 %in% surv, 0.9, 0.35) else 0.85
+    lab <- ifelse(!dans, paste0("<b>", coalesce(m$country, ""), "</b>Aucun data center recensé"),
+      paste0("<b>", m$country, "</b><br>", m$n_dc, " data centers",
+             "<br>Eau utilisée : ", fmt(m$eau, 2), " millions de m³",
+             "<br>Part de l'eau du pays : ", pct(m$part), " <span style='color:#888'>(entre ", pct(m$part_bas), " et ", pct(m$part_haut), ")</span>",
+             "<br>Manque d'eau du pays : ", ifelse(is.na(m$stress0), "n.d.", paste0(fmt(m$stress0, 0), " %")),
+             "<br><i>Cliquez pour zoomer</i>")) |> lapply(htmltools::HTML)
+    l <- leaflet(options = leafletOptions(worldCopyJump = TRUE, minZoom = 1, zoomSnap = 0.25)) |>
       addProviderTiles(providers$Esri.WorldGrayCanvas) |>
-      addPolygons(layerId = m$iso3, fillColor = pal(m$val), fillOpacity = if (iso == "MONDE") 0.85 else 0.5,
-                  color = "white", weight = 0.6, label = lab,
+      addPolygons(data = m, layerId = m$iso3, fillColor = remplissage, fillOpacity = opa, color = "white", weight = 0.6, label = lab,
                   highlightOptions = highlightOptions(weight = 2, color = "#333", bringToFront = TRUE)) |>
-      addLegend("bottomleft", pal = pal, values = m$val, title = unite[[v]], opacity = 0.9, na.label = "pas de donnée",
-                labFormat = function(type, cuts, p) { k <- formatC(cuts, format = "fg", digits = 3, big.mark = " ", decimal.mark = ",")
-                  paste0(head(k, -1), " – ", ifelse(is.infinite(tail(cuts, -1)), "et plus", tail(k, -1))) })
-    if (iso == "MONDE") return(l |> setView(5, 25, 1.75))
-    g <- d$monde[d$monde$iso3 == iso, ]; o <- d$osm |> filter(iso3 == iso)
-    if (nrow(g)) l <- l |> addPolygons(data = g, fill = FALSE, color = "#111", weight = 3, opacity = 1)
-    if (nrow(o)) {
-      palr <- colorFactor(col_aq, levels = d$lab_aq, na.color = "#777777")
+      addLegend("bottomleft", colors = c(pal(head(bins[[v]], -1) + 1e-9), "#c9c9c9", "#f4f4f4"),
+                labels = c(lab_bins[[v]], "donnée manquante", "aucun data center"), title = htmltools::HTML(titre_leg[[v]]), opacity = 0.9)
+
+    # Étapes 3 et 4 : bulles = eau utilisée par les data centers (la demande) sur la couleur du manque d'eau (la ressource)
+    if (et %in% c("3", "4") && iso == "MONDE") {
+      b <- r |> filter(eau > 0) |> inner_join(CENTRES, by = "iso3") |> arrange(desc(eau))
       l <- l |>
-        addCircleMarkers(lng = o$lon, lat = o$lat, radius = 6, color = "#222", weight = 1, fillOpacity = 0.9, fillColor = palr(o$stress_region),
-                         label = lapply(paste0("<b>", o$nom, "</b><br>", coalesce(o$region, ""), "<br>Manque d'eau de la région : ",
-                                               coalesce(as.character(o$stress_region), "n.d.")), htmltools::HTML)) |>
-        addLegend("bottomright", colors = col_aq[1:5], labels = d$lab_aq[1:5], opacity = 0.9,
-                  title = htmltools::HTML(paste0(nrow(o), " sites · manque d'eau<br>de leur région")))
+        addCircleMarkers(lng = b$lon, lat = b$lat, radius = pmin(42, 3 + 2.4 * sqrt(b$eau)), stroke = TRUE, color = "#fff", weight = 1,
+                         fillColor = "#1f4e8b", fillOpacity = 0.6, layerId = paste0("b_", b$iso3),
+                         label = lapply(paste0("<b>", b$country, "</b><br>Eau des data centers : ", fmt(b$eau, 1), " millions de m³<br>",
+                                               "Manque d'eau du pays : ", ifelse(is.na(b$stress0), "n.d.", paste0(fmt(b$stress0, 0), " %"))), htmltools::HTML)) |>
+        addControl(htmltools::HTML("<div class='leg-bulle'><span class='rond'></span> Taille de la bulle =<br>eau utilisée par les data centers</div>"),
+                   position = "topright")
     }
+    # Étape 4 : pays à surveiller entourés en rouge et nommés
+    if (et == "4" && iso == "MONDE" && length(surv)) {
+      g <- d$monde[d$monde$iso3 %in% surv, ]
+      ce <- CENTRES |> filter(iso3 %in% surv) |> left_join(r |> select(iso3, country), by = "iso3")
+      l <- l |> addPolygons(data = g, fill = FALSE, color = "#c0392b", weight = 3, opacity = 1) |>
+        addLabelOnlyMarkers(lng = ce$lon, lat = ce$lat, label = ce$country,
+                            labelOptions = labelOptions(noHide = TRUE, direction = "top", textOnly = TRUE, className = "etiq-surv"))
+    }
+    if (iso == "MONDE") return(l |> setView(5, 25, 1.75))
+
+    # Zoom sur un pays : régions (bulles) + chaque data center (points)
+    g <- d$monde[d$monde$iso3 == iso, ]; o <- d$osm |> filter(iso3 == iso); rg <- d$regions |> filter(iso3 == iso)
+    palr <- colorFactor(col_aq, levels = d$lab_aq, na.color = "#777777")
+    if (nrow(g)) l <- l |> addPolygons(data = g, fill = FALSE, color = "#111", weight = 3, opacity = 1)
+    if (nrow(rg)) l <- l |>
+      addCircleMarkers(lng = rg$lon, lat = rg$lat, radius = pmin(45, 8 + 3 * sqrt(rg$sites)), stroke = TRUE, weight = 2,
+                       color = palr(rg$stress_region), fillColor = palr(rg$stress_region), fillOpacity = 0.25,
+                       label = lapply(paste0("<b>", rg$region, "</b><br>", rg$sites, " data centers<br>Manque d'eau : ", rg$stress_region), htmltools::HTML))
+    if (nrow(o)) l <- l |>
+      addCircleMarkers(lng = o$lon, lat = o$lat, radius = 4, color = "#222", weight = 1, fillOpacity = 0.95, fillColor = palr(o$stress_region),
+                       label = lapply(paste0("<b>", o$nom, "</b><br>", coalesce(o$region, ""), "<br>Manque d'eau de la région : ",
+                                             coalesce(as.character(o$stress_region), "n.d.")), htmltools::HTML)) |>
+      addLegend("bottomright", colors = col_aq[1:5], labels = d$lab_aq[1:5], opacity = 0.9,
+                title = htmltools::HTML("Manque d'eau de la région<br><small>grand cercle = région · point = site</small>"))
     if (nrow(o) >= 2) {
       lo <- quantile(o$lon, c(0.02, 0.98)); la <- quantile(o$lat, c(0.02, 0.98))
       dx <- max(1, diff(lo) * 0.15); dy <- max(1, diff(la) * 0.15)
@@ -405,38 +490,114 @@ server <- function(input, output, session) {
     } else if (nrow(g)) {
       bb <- sf::st_bbox(g)
       if (bb[["xmax"]] - bb[["xmin"]] < 120) l |> fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]])
-      else { ct <- suppressWarnings(sf::st_coordinates(sf::st_point_on_surface(sf::st_geometry(g)))); l |> setView(ct[1, 1], ct[1, 2], 3) }
+      else { ce <- CENTRES |> filter(iso3 == iso); l |> setView(ce$lon[1], ce$lat[1], 3) }
     } else l |> setView(5, 25, 1.75)
   })
-  output$carte_retenir <- renderText({
-    if (input$pays_sel != "MONDE") return("Points = data centers du pays, colorés selon le manque d'eau de leur région. Survolez-les.")
-    t <- pres() |> filter(n_dc >= 5, !is.na(.data[[input$var_carte]])) |> slice_max(.data[[input$var_carte]], n = 3, with_ties = FALSE)
-    paste0("Cliquez sur un pays pour zoomer. Valeurs les plus fortes : ", paste(t$country, collapse = ", "), ".")
+  observeEvent(input$carte_marker_click, {
+    id <- input$carte_marker_click$id
+    if (!is.null(id) && startsWith(id, "b_")) updateSelectInput(session, "pays_sel", selected = sub("^b_", "", id))
   })
 
-  output$fiche <- renderUI({
-    ligne <- function(t, v, e = NULL) tagList(tags$dt(t), tags$dd(v, if (!is.null(e)) div(class = "equiv", e)))
-    if (input$pays_sel == "MONDE") {
-      r <- res(); p <- pres() |> filter(n_dc >= 5) |> slice_max(part, n = 1)
-      return(card_body(class = "fiche", h4("Monde"), p(class = "text-muted small", quand()),
-        tags$dl(
-          ligne("Data centers", fmt(sum(r$n_dc), 0), paste(nrow(r), "pays")),
-          ligne("Eau utilisée", paste(fmt(sum(r$eau), 0), "millions de m³"), paste0("≈ ", grand(sum(r$eau) * 1e6 / PISCINE), " piscines olympiques")),
-          ligne("Pays le plus exposé", paste0(p$country, " : ", pct(p$part)), "de l'eau du pays")),
-        p(class = "small text-muted mt-2", bs_icon("hand-index"), " Cliquez sur un pays de la carte.")))
+  # Texte de l'étape (une ou deux phrases, chiffres à jour)
+  output$etape_texte <- renderUI({
+    r <- res(); p <- pres(); et <- input$etape
+    boite <- function(...) div(class = "etape-texte", span(class = "etape-num", et), div(...))
+    if (input$pays_sel != "MONDE") {
+      x <- r |> filter(iso3 == input$pays_sel); rg <- d$regions |> filter(iso3 == input$pays_sel) |> arrange(-sites)
+      return(div(class = "etape-texte", span(class = "etape-num", bs_icon("zoom-in")), div(
+        tags$b(paste0(x$country, " : ")), if (nrow(rg)) paste0(x$n_dc, " data centers recensés ; sur la carte, ", sum(rg$sites), " bâtiments géolocalisés (OpenStreetMap) dans ", nrow(rg), " régions. ",
+          "La plus équipée : ", rg$region[1], " (", rg$sites[1], " sites, manque d'eau ", tolower(sub(" \\(.*", "", rg$stress_region[1])), ").")
+          else "pas de site géolocalisé.", " ", actionLink("retour_monde", "Revenir au monde"))))
     }
-    r <- res() |> filter(iso3 == input$pays_sel)
-    cl <- d$climat |> filter(iso3 == r$iso3, sensible)
-    verdict <- if (is.na(r$part)) "Données d'eau manquantes." else if (r$part < 0.1) "Très faible face aux autres usages." else
-      if (r$part < 1) "Faible, mais à suivre." else "Point de vigilance."
-    card_body(class = "fiche", h4(r$country), p(class = "text-muted small", quand()),
-      tags$dl(
-        ligne("Data centers", r$n_dc, if (!is.na(r$sites_osm)) paste(r$sites_osm, "géolocalisés sur la carte")),
-        ligne("Eau utilisée", paste(fmt(r$eau, 2), "millions de m³"), paste0("≈ eau de ", grand(r$eau * 1e6 / HAB_M3), " habitants")),
-        ligne("Part de l'eau du pays", pct(r$part), verdict),
-        ligne("Manque d'eau du pays", if (is.na(r$stress0)) "n.d." else paste0(fmt(r$stress0, 0), " % (", r$cat0, ")")),
-        ligne("Sites dans une région qui manque d'eau", pct(r$pct_sites_region_stress)),
-        ligne("Mois chauds et secs", if (nrow(cl)) paste(mois_fr[cl$mois], collapse = ", ") else "aucun")))
+    top5 <- r |> slice_max(n_dc, n = 5)
+    switch(et,
+      "1" = boite(tags$b(paste0(fmt(sum(r$n_dc), 0), " data centers dans ", nrow(r), " pays. ")),
+                  paste0("Plus de la moitié (", fmt(100 * sum(top5$n_dc) / sum(r$n_dc), 0), " %) sont dans 5 pays : ", paste(top5$country, collapse = ", "), ".")),
+      "2" = { mx <- p |> filter(n_dc >= 5) |> slice_max(part, n = 1)
+              boite(tags$b(paste0(fmt(sum(r$eau), 0), " millions de m³ d'eau ", quand(), ". ")),
+                    paste0("Dans ", fmt(100 * mean(p$part < 0.1, na.rm = TRUE), 0), " % des pays, c'est moins de 0,1 % de l'eau du pays. Le plus exposé : ",
+                    mx$country, " (", pct(mx$part), ").")) },
+      "3" = boite(tags$b("Bulles = demande (eau des data centers), couleur = ressource (manque d'eau). "),
+                  paste0("Les grosses bulles sont surtout sur des pays jaunes : ",
+                  fmt(100 * sum(r$n_dc[!is.na(r$stress0) & r$stress0 < 50]) / sum(r$n_dc), 0),
+                  " % des sites sont dans des pays où l'eau ne manque pas.")),
+      "4" = { s <- arb() |> filter(signaux >= 2) |> arrange(-signaux)
+              boite(tags$b(paste0(nrow(s), " pays à surveiller, entourés en rouge : ")), paste0(paste(s$country, collapse = ", "), ". "),
+                    span(class = "text-muted", "Ils cumulent au moins 2 signaux : eau des data centers ≥ 1 % de celle des habitants, ",
+                         "≥ 25 % des sites en région sèche, pays déjà en stress (≥ 50 %).")) })
+  })
+  observeEvent(input$retour_monde, updateSelectInput(session, "pays_sel", selected = "MONDE"))
+
+  # ---------- Fiche (jauge, « sur 10 000 litres », comparaison)
+  jauge <- function(v) {
+    if (is.na(v)) return(div(class = "text-muted small", "Part de l'eau : donnée manquante"))
+    pos <- max(0, min(100, (log10(max(v, 1e-4)) + 3) / 4 * 100))
+    div(class = "jauge",
+      div(class = "jauge-titre", "Part de l'eau du pays utilisée par les data centers"),
+      div(class = "jauge-barre", div(class = "z1"), div(class = "z2"), div(class = "z3"),
+          div(class = "jauge-curseur", style = paste0("left:", pos, "%;"), span(pct(v)))),
+      div(class = "jauge-lib", span("faible"), span("à suivre (0,1 %)"), span("vigilance (1 %)")))
+  }
+  litres_pays <- function(x) {
+    if (any(is.na(c(x$pct_agri, x$pct_indus, x$pct_menages, x$prelev0)))) return(NULL)
+    tot <- x$pct_agri + x$pct_indus + x$pct_menages
+    v <- c(Agriculture = x$pct_agri, Industrie = x$pct_indus, Habitants = x$pct_menages) / tot * 1e4
+    dc <- 1e4 * x$eau / (x$prelev0 * 1e3)
+    ligne <- function(nom, val, cls = "") div(class = paste("litre", cls), span(class = "nom", nom),
+      div(class = "barre", div(style = paste0("width:", max(0.8, val / 100), "%;"))), span(class = "val", paste(fmt(val, ifelse(val < 10, 1, 0)), "L")))
+    div(class = "litres", div(class = "fiche-sous", "Sur 10 000 litres prélevés dans ce pays"),
+        ligne("Agriculture", v[["Agriculture"]]), ligne("Industrie", v[["Industrie"]]), ligne("Habitants", v[["Habitants"]]),
+        ligne("Data centers", dc, "dc"))
+  }
+  output$fiche <- renderUI({
+    r <- res()
+    if (input$pays_sel == "MONDE") {
+      p <- pres() |> filter(n_dc >= 5) |> slice_max(part, n = 1)
+      return(card_body(class = "fiche", h4("Monde"), p(class = "text-muted small mb-2", quand()),
+        div(class = "chiffres-fiche",
+          div(div(class = "n", fmt(sum(r$n_dc), 0)), "data centers"),
+          div(div(class = "n", fmt(sum(r$eau), 0)), "millions de m³"),
+          div(div(class = "n", pct(p$part)), p$country)),
+        div(class = "mode-emploi",
+          div(bs_icon("1-circle"), " Suivez les 4 étapes au-dessus de la carte."),
+          div(bs_icon("2-circle"), " Cliquez sur un pays (ou une bulle) pour zoomer."),
+          div(bs_icon("3-circle"), " Faites défiler les années avec ▶ dans le panneau de gauche."))))
+    }
+    x <- r |> filter(iso3 == input$pays_sel)
+    comp <- NULL
+    if (!is.null(input$pays_comp) && input$pays_comp != "" && input$pays_comp != input$pays_sel) {
+      y <- r |> filter(iso3 == input$pays_comp)
+      lig <- function(t, a, b) tags$tr(tags$td(t), tags$td(a), tags$td(b))
+      comp <- div(class = "comparaison", div(class = "fiche-sous", "Comparaison"),
+        tags$table(class = "table table-sm mb-0",
+          tags$thead(tags$tr(tags$th(""), tags$th(x$country), tags$th(y$country))),
+          tags$tbody(
+            lig("Data centers", x$n_dc, y$n_dc),
+            lig("Eau (Mm³)", fmt(x$eau, 1), fmt(y$eau, 1)),
+            lig("Part de l'eau", pct(x$part), pct(y$part)),
+            lig("Manque d'eau", paste0(fmt(x$stress0, 0), " %"), paste0(fmt(y$stress0, 0), " %")),
+            lig("Sites en région sèche", pct(x$pct_sites_region_stress), pct(y$pct_sites_region_stress)))))
+    }
+    card_body(class = "fiche", h4(x$country), p(class = "text-muted small mb-2", quand()),
+      div(class = "chiffres-fiche",
+        div(div(class = "n", x$n_dc), "data centers"),
+        div(div(class = "n", fmt(x$eau, 1)), "millions de m³"),
+        div(div(class = "n", grand(x$eau * 1e6 / HAB_M3)), "habitants (équivalent)")),
+      jauge(x$part), litres_pays(x), comp)
+  })
+  output$fiche_clim <- renderPlotly({
+    req(input$pays_sel != "MONDE")
+    c <- d$climat |> filter(iso3 == input$pays_sel) |> arrange(mois)
+    if (nrow(c) == 0) return(plotly_empty())
+    sh <- lapply(c$mois[c$sensible], function(i) list(type = "rect", xref = "x", yref = "paper", x0 = i - 0.5, x1 = i + 0.5,
+                                                       y0 = 0, y1 = 1, fillcolor = "#f0ad4e", opacity = 0.3, line = list(width = 0), layer = "below"))
+    plot_ly(c, x = ~mois) |>
+      add_bars(y = ~pr, marker = list(color = "#9ecae1"), hovertext = ~paste0(mois_fr[mois], " : ", fmt(pr, 0), " mm"), hoverinfo = "text", showlegend = FALSE) |>
+      add_lines(y = ~tas, yaxis = "y2", line = list(color = "#d62728", width = 2.5), hovertext = ~paste0(mois_fr[mois], " : ", fmt(tas, 1), " °C"),
+                hoverinfo = "text", showlegend = FALSE) |>
+      layout(shapes = sh, margin = list(l = 30, r = 30, t = 5, b = 25),
+             xaxis = list(title = "", tickvals = 1:12, ticktext = substr(mois_fr, 1, 1), tickfont = list(size = 10)),
+             yaxis = list(title = "", tickfont = list(size = 9)), yaxis2 = list(title = "", overlaying = "y", side = "right", showgrid = FALSE, tickfont = list(size = 9)))
   })
 
   # ---------- Régions
