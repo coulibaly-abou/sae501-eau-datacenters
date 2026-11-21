@@ -324,41 +324,27 @@ ui <- page_navbar(
   # ---- Usages de l'eau (arbitrages)
   nav_panel("Usages", icon = bs_icon("signpost-split"),
     card(card_header(class = "d-flex justify-content-between align-items-center",
-           span(class = "titre-bloc", "Sur 10 000 litres d'eau prélevés, qui les utilise ?"),
-           tooltip(bs_icon("info-circle", class = "aide"), "Prélèvements d'eau des 132 pays étudiés (FAO AQUASTAT, Rapport 1) et eau des data centers estimée (Rapport 2), selon les hypothèses choisies à gauche.")),
+           span(class = "titre-bloc", "Sur 10 000 litres prélevés"),
+           tooltip(bs_icon("info-circle", class = "aide"), "132 pays. Prélèvements par usage : FAO AQUASTAT. Data centers : estimation du Rapport 2 (hypothèses à gauche).")),
          card_body(uiOutput("litres")),
          card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("litres_retenir", inline = TRUE))),
     layout_columns(col_widths = c(7, 5),
       card(full_screen = TRUE,
         card_header(class = "d-flex justify-content-between align-items-center",
-          span(class = "titre-bloc", "À quoi correspond un data center dans la vie de tous les jours ?"),
+          span(class = "titre-bloc", "Un data center, en équivalents"),
           tooltip(bs_icon("info-circle", class = "aide"),
-            "Un an de fonctionnement. Électricité : 3,77 GWh par MW de puissance informatique installée (moyenne observée dans le rapport de la Commission européenne, données 2024). Eau : litres par kWh choisis à gauche. Équivalents (ordres de grandeur) : foyer français ≈ 4,5 MWh/an ; habitant ≈ 65 m³/an (Arcep) ; douche ≈ 60 L ; piscine olympique = 2 500 m³ ; 1 kg de bœuf ≈ 15 400 L d'eau (empreinte eau, Water Footprint Network, pluie comprise) ; voiture ≈ 0,2 kg de CO₂ par km.")),
+            "Un an de fonctionnement. 3,77 GWh par MW installé (Commission européenne, 2024). Foyer ≈ 4,5 MWh/an ; habitant ≈ 65 m³/an (Arcep) ; voiture ≈ 0,2 kg CO₂/km.")),
         div(class = "parcours d-flex flex-wrap align-items-center column-gap-4 px-3 pt-3",
-          radioButtons("mw", NULL, inline = TRUE, c("1 MW (petit)" = 1, "10 MW (moyen)" = 10, "100 MW (grand campus IA)" = 100), 10),
+          radioButtons("mw", NULL, inline = TRUE, c("1 MW" = 1, "10 MW" = 10, "100 MW" = 100), 10),
           div(class = "d-flex align-items-center gap-2", span(class = "small text-muted", "Électricité de :"),
               selectInput("mix", NULL, width = "220px", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)][!is.na(d$pays$gco2_kwh[order(d$pays$country)])], "FRA"))),
-        card_body(uiOutput("conv")),
-        card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("conv_retenir", inline = TRUE))),
-      bloc("D'où vient vraiment l'eau des data centers ?", "directe",
-           "Data centers suivis par l'Arcep en France (2024) : 0,575 million de m³ prélevés sur place pour le refroidissement, 6,5 millions de m³ en comptant l'eau utilisée pour produire leur électricité.",
-           "9 % sur place, 91 % dans les centrales : le levier principal, c'est l'électricité (son mix et son efficacité).", "330px")),
-    layout_columns(col_widths = c(6, 6),
-      card(full_screen = TRUE,
-        card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
-          span(class = "titre-bloc", "Les autres usages évoluent aussi"),
-          div(class = "d-flex align-items-center gap-2",
-            tooltip(bs_icon("info-circle", class = "aide"),
-              "Prélèvements d'eau par usage (FAO AQUASTAT, années disponibles) et eau des data centers estimée de 2024 à 2035 (bande : croissance lente à rapide). Échelle logarithmique pour voir les deux ordres de grandeur."),
-            selectInput("pays_us", NULL, width = "190px", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)], "FRA"))),
-        plotlyOutput("tendance", height = "380px"),
-        card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("tendance_retenir", inline = TRUE))),
-      bloc("Où les data centers peuvent-ils concurrencer les habitants ?", "arb",
-           "Chaque bulle est un pays (taille = nombre de sites). À droite : beaucoup de sites dans des régions qui manquent d'eau. En haut : l'eau des data centers pèse face à l'eau des habitants. Zone rouge : les deux à la fois.",
-           textOutput("arb_retenir", inline = TRUE), "380px")),
-    bloc("Mesures réelles : l'eau consommée par chaque site Google en 2025", "carte_google",
-         "Eau consommée par site, publiée par Google (rapport environnemental 2026). Taille = volume ; couleur = manque d'eau de la région.",
-         "Un seul site peut utiliser l'eau d'une ville de 50 000 habitants : à l'échelle locale, l'arbitrage est réel.", "380px", leafletOutput)
+        card_body(uiOutput("conv"))),
+      bloc("91 % de l'eau vient de l'électricité", "directe",
+           "Data centers suivis par l'Arcep (France, 2024) : 0,575 Mm³ prélevés sur place, 6,5 Mm³ en comptant la production de leur électricité.",
+           "Le levier principal : le mix électrique.", "300px")),
+    bloc("Usages de l'eau, 1990-2035", "tendance",
+         "Prélèvements par usage (FAO AQUASTAT) et eau des data centers estimée 2024-2035 (bande : croissance lente à rapide). Échelle logarithmique.",
+         textOutput("tendance_retenir", inline = TRUE), "360px")
   ),
 
   # ---- Demain
@@ -860,8 +846,8 @@ server <- function(input, output, session) {
       tuile("house-door", paste(fmt(l$men, 0), "L"), "habitants (eau du robinet)"),
       tuile("hdd-rack", paste(fmt(l$dc, 1), "L"), paste("data centers,", quand()), "dc"))
   })
-  output$litres_retenir <- renderText(paste0("Les data centers utilisent environ ", fmt(litres()$dc, 1),
-    ifelse(litres()$dc >= 2, " litres", " litre"), " sur 10 000 : à l'échelle des pays, c'est très peu. Le risque est local (une région, un été)."))
+  output$litres_retenir <- renderText(paste0(fmt(litres()$dc, 1), ifelse(litres()$dc >= 2, " litres", " litre"),
+    " sur 10 000 pour les data centers : faible à l'échelle nationale, le risque est local."))
 
   arb <- reactive(pres() |> filter(n_dc >= 10) |>
     mutate(signaux = (!is.na(ratio_menages) & ratio_menages >= 1) + (!is.na(pct_sites_region_stress) & pct_sites_region_stress >= 25) +
@@ -911,15 +897,10 @@ server <- function(input, output, session) {
   output$conv <- renderUI({
     x <- conv()
     tuile <- function(ic, val, txt, cls = "") div(class = paste("tuile", cls), bs_icon(ic), div(class = "gros", val), txt)
-    tagList(
-      layout_columns(col_widths = c(4, 4, 4), fill = FALSE,
-        tuile("lightning-charge", paste(fmt(x$mwh / 1e3, 1), "GWh"), paste0("d'électricité par an ≈ ", grand(x$mwh / 4.5), " foyers")),
-        tuile("droplet", paste(grand(x$eau), "m³"), paste0("d'eau par an ≈ ", grand(x$eau / HAB_M3), " habitants")),
-        tuile("cloud", paste(grand(x$co2_t), "t"), paste0("de CO₂ ≈ ", avec_unite(x$co2_t * 1e3 / KM_KG, "km"), " en voiture"))),
-      layout_columns(col_widths = c(4, 4, 4), fill = FALSE, class = "mt-2",
-        tuile("water", grand(x$eau * 1e3 / 60), "douches de 5 minutes", "petite"),
-        tuile("tsunami", grand(x$eau / PISCINE), "piscines olympiques", "petite"),
-        tuile("egg-fried", paste(grand(x$eau * 1e3 / 15400), "kg"), "de bœuf (empreinte eau)", "petite")))
+    layout_columns(col_widths = c(4, 4, 4), fill = FALSE,
+      tuile("lightning-charge", paste(fmt(x$mwh / 1e3, 1), "GWh"), paste("≈", grand(x$mwh / 4.5), "foyers")),
+      tuile("droplet", paste(grand(x$eau), "m³"), paste("≈", grand(x$eau / HAB_M3), "habitants")),
+      tuile("cloud", paste(grand(x$co2_t), "t CO₂"), paste("≈", avec_unite(x$co2_t * 1e3 / KM_KG, "km"), "en voiture")))
   })
   output$conv_retenir <- renderText({
     x <- conv()
@@ -939,8 +920,9 @@ server <- function(input, output, session) {
              margin = list(t = 10, b = 10))
   })
 
+  pays_tend <- reactive(if (!is.null(input$pays_sel) && input$pays_sel != "MONDE") input$pays_sel else "FRA")
   output$tendance <- renderPlotly({
-    iso <- input$pays_us
+    iso <- pays_tend()
     s <- d$secteurs_ts |> filter(iso3 == iso, annee >= 1990)
     dc <- bind_rows(lapply(2024:2035, function(y) tibble(annee = y,
             bas = sum(calculer(w(), "bas", y)$eau[d$pays$iso3 == iso]) / 1e3,
@@ -961,18 +943,17 @@ server <- function(input, output, session) {
                 line = list(color = "#d35400", width = 3),
                 hovertext = ~paste0("Data centers ", annee, " : ", fmt(central * 1e3, 1), " millions de m³"), hoverinfo = "text") |>
       layout(xaxis = list(title = ""), legend = list(orientation = "h", x = 0, y = -0.15),
+             title = list(text = paste0("<b>", d$pays$country[d$pays$iso3 == iso], "</b>"), x = 0.01, font = list(size = 14)),
+             margin = list(t = 35),
              yaxis = list(title = "Milliards de m³ par an (échelle log)", type = "log",
                           tickvals = c(0.001, 0.01, 0.1, 1, 10, 100, 1000), ticktext = c("0,001", "0,01", "0,1", "1", "10", "100", "1 000")))
   })
   output$tendance_retenir <- renderText({
-    iso <- input$pays_us; n <- d$pays$country[d$pays$iso3 == iso]
-    s <- d$secteurs_ts |> filter(iso3 == iso, annee >= 1990) |> group_by(usage) |> arrange(annee) |>
-      summarise(a0 = first(annee), a1 = last(annee), v = 100 * (last(mds_m3) / first(mds_m3) - 1), .groups = "drop") |> filter(a1 > a0)
+    iso <- pays_tend()
     e24 <- sum(calculer(w(), "central", 2024)$eau[d$pays$iso3 == iso]); e35 <- sum(calculer(w(), "central", 2035)$eau[d$pays$iso3 == iso])
-    txt <- if (nrow(s)) paste0(n, " : ", paste0(tolower(s$usage), " ", ifelse(s$v >= 0, "+", ""), fmt(s$v, 0), " %", collapse = ", "),
-                               " (", min(s$a0), "-", max(s$a1), "). ") else paste0(n, " : pas d'historique par usage. ")
-    paste0(txt, "Data centers : ×", fmt(e35 / max(e24, 1e-9), 1), " entre 2024 et 2035 (croissance centrale), mais toujours très loin des autres usages.")
+    paste0("Data centers ×", fmt(e35 / max(e24, 1e-9), 1), " d'ici 2035, toujours loin derrière les autres usages.")
   })
+
 
   # ---------- Demain
   output$traj <- renderPlotly({
