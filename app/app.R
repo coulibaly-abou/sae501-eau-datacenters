@@ -352,19 +352,15 @@ ui <- page_navbar(
   # ---- Demain
   nav_panel("Demain", icon = bs_icon("graph-up-arrow"),
     layout_columns(col_widths = c(6, 6),
-      bloc("L'électricité des data centers va fortement augmenter", "traj",
-           "Mesures 2020-2024 (trait plein) puis les 4 scénarios de l'Agence internationale de l'énergie.",
-           "x1,7 à x4,1 d'ici 2035.", "340px"),
+      bloc("×1,7 à ×4,1 d'ici 2035", "traj",
+           "Électricité mondiale des data centers : mesures 2020-2024 (trait plein) puis les 4 scénarios de l'Agence internationale de l'énergie (Energy and AI, 2025).",
+           "La hausse est certaine, son ampleur ne l'est pas.", "340px"),
       bloc("Les pays les plus exposés en 2035", "top10_fut",
            "Part de l'eau du pays utilisée par les data centers en 2024, 2030 et 2035. Barre rose : écart entre croissance lente et rapide.",
            textOutput("fut_retenir", inline = TRUE), "340px")),
-    layout_columns(col_widths = c(6, 6),
-      bloc("France : l'eau prélevée continue de baisser", "fr_prev",
-           "Prélèvements d'eau de la France (tous usages), observés 2015-2022 puis prévus (modèle de dérive, intervalle à 95 %).",
-           textOutput("prev_retenir", inline = TRUE), "320px"),
-      bloc("France : l'eau des data centers d'ici 2035", "fr_scen",
-           "Eau des data centers français selon la croissance. En rouge : la part due à l'IA. Étiquette : part de l'eau prélevée en France.",
-           textOutput("frscen_retenir", inline = TRUE), "320px"))
+    bloc(textOutput("fr_titre", inline = TRUE), "fr_scen",
+         "Eau des data centers français selon la croissance (Arcep, AIE). En rouge : la part due à l'IA. Étiquette : part de l'eau prélevée en France, prévue par le modèle de dérive (voir Méthode).",
+         textOutput("frscen_retenir", inline = TRUE), "330px")
   ),
 
   # ---- Méthode
@@ -387,7 +383,10 @@ ui <- page_navbar(
                "Le modèle de dérive (vert) suit le mieux la réalité.", "360px"),
           bloc("Erreur de chaque modèle", "mae",
                "Erreur absolue moyenne sur 2020-2022 (milliards de m³). Plus c'est court, mieux c'est.",
-               "Dérive : 0,75, deux fois moins que les autres.", "360px"))),
+               "Dérive : 0,75, deux fois moins que les autres.", "360px")),
+        bloc("Prévision de l'eau prélevée en France", "fr_prev",
+             "Prélèvements d'eau de la France (tous usages), observés 2015-2022 puis prévus par le modèle de dérive, avec intervalle de confiance à 95 %.",
+             textOutput("prev_retenir", inline = TRUE), "320px")),
       nav_panel("Profils de pays (ACP)",
         layout_columns(col_widths = c(6, 6),
           bloc("4 familles de pays", "carte_classes",
@@ -974,9 +973,10 @@ server <- function(input, output, session) {
       layout(xaxis = list(title = "% de l'eau du pays"), yaxis = list(title = ""), legend = LEG)
   })
   output$fut_retenir <- renderText({
-    p <- top10()$pts |> filter(h == "2035") |> slice_max(part, n = 1)
-    paste0(p$country, " reste en tête (", pct(p$part), " en 2035). Ailleurs, la part reste faible.")
+    p <- top10()$pts |> filter(h == "2035") |> arrange(desc(part))
+    paste0(p$country[1], " en tête (", pct(p$part[1]), ") ; ailleurs, moins de ", pct(ceiling(p$part[2] * 10) / 10), ".")
   })
+
   output$fr_prev <- renderPlotly({
     o <- d$prev_fr$obs; pv <- d$prev_fr$prev
     plot_ly() |>
@@ -987,8 +987,9 @@ server <- function(input, output, session) {
   })
   output$prev_retenir <- renderText({
     pv <- d$prev_fr$prev |> filter(annee == 2035)
-    paste0("Environ ", fmt(pv$prevision, 1), " milliards de m³ en 2035, avec une forte incertitude.")
+    paste0("≈ ", fmt(pv$prevision, 1), " milliards de m³ en 2035 (intervalle : ", fmt(pv$basse, 1), " à ", fmt(pv$haute, 1), ").")
   })
+
   fr_scen <- reactive({
     e0f <- d$pays$e0[d$pays$iso3 == "FRA"]
     prel <- c(`2024` = d$pays$prelev0[d$pays$iso3 == "FRA"], `2030` = d$prev_fr$prev$prevision[d$prev_fr$prev$annee == 2030],
@@ -1005,12 +1006,18 @@ server <- function(input, output, session) {
     plot_ly(f, x = ~lab) |>
       add_bars(y = ~eau - eau_ia, name = "Hors IA", marker = list(color = "#9ecae1")) |>
       add_bars(y = ~eau_ia, name = "IA", marker = list(color = "#d62728"), text = ~pct(part), textposition = "outside") |>
-      layout(barmode = "stack", xaxis = list(title = ""), yaxis = list(title = "Millions de m³"), legend = LEG)
+      layout(barmode = "stack", xaxis = list(title = ""), yaxis = list(title = "Millions de m³", range = c(0, max(f$eau) * 1.15)), legend = LEG)
   })
   output$frscen_retenir <- renderText({
-    f <- fr_scen()
-    paste0("De ", fmt(f$eau[1], 1), " à ", fmt(max(f$eau[f$h == "2035"]), 1), " millions de m³ en 2035, soit au plus ", pct(max(f$part)), " de l'eau de la France.")
+    f <- fr_scen(); i35 <- f$h == "2035"
+    paste0("×", fmt(min(f$eau[i35]) / f$eau[1], 1), " à ×", fmt(max(f$eau[i35]) / f$eau[1], 1), " d'ici 2035 ; l'IA en explique environ ",
+           fmt(100 * max(f$eau_ia[i35] / f$eau[i35]), 0), " %.")
   })
+  output$fr_titre <- renderText({
+    f <- fr_scen()
+    paste0("France : jusqu'à ", pct(max(f$part)), " de l'eau en 2035")
+  })
+
 
   # ---------- Méthode
   output$etapes <- renderUI({
