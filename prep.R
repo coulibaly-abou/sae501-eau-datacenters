@@ -308,6 +308,13 @@ google <- google |> rowwise() |>
          bws_cat = ifelse(dk < 150, osm_ok$bws_cat[k], NA)) |>
   ungroup() |> mutate(stress_region = cat_aq(bws_cat)) |> select(-k, -dk)
 
+# Historique des prélèvements par usage (milliards de m3), FAO AQUASTAT
+secteurs_ts <- fread("donnees_brutes/aquastat_sectoriel_mon_extrait.csv") |> as_tibble() |>
+  filter(!grepl("%", Variable)) |>
+  mutate(usage = case_when(grepl("Agricultural", Variable) ~ "Agriculture", grepl("Industrial", Variable) ~ "Industrie",
+                           TRUE ~ "Habitants")) |>
+  transmute(iso3, annee = Year, usage, mds_m3 = Value)
+
 eu <- fread("donnees_brutes/eu_dc_report_electricite_eau.csv") |> as_tibble() |>
   transmute(iso3, puissance_mw = puissance_it_mw, elec_gwh = conso_electrique_gwh, eau_m3 = conso_eau_m3)
 
@@ -356,7 +363,7 @@ saveRDS(list(
   osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region, stress_2030, stress_2050),
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
-  refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites
+  refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites, secteurs_ts = secteurs_ts
 ), "app/app_data.rds")
 cat("Sites OSM :", nrow(osm), "| % en région stress élevé/extrême :",
     round(100 * mean(osm$bws_cat >= 3, na.rm = TRUE), 1), "\n")
