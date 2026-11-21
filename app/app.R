@@ -154,6 +154,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .comparaison table{font-size:.82rem;}
     .sep-vert{width:1px;height:28px;background:#cfd8dc;}
     .parcours .shiny-input-container{margin-bottom:0 !important;width:auto !important;}
+    .parcours .selectize-control{min-width:210px;}
     .curseur-mois .irs-grid, .curseur-mois .irs-min, .curseur-mois .irs-max, .curseur-mois .irs-single{display:none;}
     .tuile.petite{padding:10px 8px;} .tuile.petite .gros{font-size:1.35rem;} .tuile.petite .bi{font-size:1.3rem;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
