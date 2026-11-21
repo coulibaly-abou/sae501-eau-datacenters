@@ -61,6 +61,31 @@ bloc <- function(titre, sortie, aide, retenir, h = "380px", plot = plotlyOutput)
 theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_font = font_google("Inter")) |>
   bs_add_rules("
     body{font-size:15px;}
+    /* Barre de navigation */
+    .navbar{padding:.55rem 1.4rem !important;background:linear-gradient(90deg,#123f52 0%,#1f6f8b 100%) !important;
+            box-shadow:0 3px 14px rgba(0,0,0,.18);}
+    .navbar .container-fluid{flex-wrap:nowrap;}
+    .navbar-brand{display:flex;align-items:center;padding:0;margin-right:2rem;}
+    @media (min-width:992px){
+      .navbar > .container-fluid{display:grid !important;grid-template-columns:1fr auto 1fr;align-items:center;}
+      .navbar > .container-fluid > .navbar-brand{grid-column:1;justify-self:start;}
+      .navbar > .container-fluid > .navbar-collapse{grid-column:2;justify-content:center;}
+      .navbar > .container-fluid > .navbar-toggler{display:none;}}
+    .marque{display:flex;align-items:center;gap:.6rem;line-height:1.1;}
+    .marque .goutte{font-size:1.7rem;color:#7fd3f7;}
+    .marque-titre{font-weight:800;font-size:1.25rem;color:#fff;letter-spacing:.01em;}
+    .marque-sous{font-size:.72rem;color:rgba(255,255,255,.72);letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
+    .navbar .navbar-nav{margin-left:auto !important;margin-right:auto !important;gap:.4rem;}
+    .navbar .nav-link{color:rgba(255,255,255,.88) !important;font-weight:500;font-size:1rem;padding:.5rem 1.05rem !important;
+                      border-radius:999px;border:0 !important;transition:background .15s,color .15s;}
+    .navbar .nav-link .bi{margin-right:.15rem;}
+    .navbar .nav-link:hover{background:rgba(255,255,255,.14);color:#fff !important;}
+    .navbar .nav-link.active{background:#fff !important;color:#1f6f8b !important;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.15);}
+    .navbar .nav-link.active::after,.navbar .nav-link::after{display:none !important;}
+    .navbar .navbar-nav .nav-item{border:0 !important;}
+    .navbar-nav .nav-link.active, .navbar-underline .nav-link.active{border-bottom:0 !important;}
+    @media (max-width:1450px){.navbar .nav-link{padding:.45rem .75rem !important;font-size:.95rem;} .navbar .navbar-nav{gap:.2rem;}}
+    @media (max-width:1250px){.marque-sous{display:none;}}
     .titre-bloc{font-weight:600;}
     .aide{color:#1f6f8b;cursor:help;font-size:1.05rem;}
     .card-footer.retenir{background:#fff8e1;border-top:2px solid #f0ad4e;font-size:.95rem;}
@@ -85,7 +110,10 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     @media (max-width:900px){.bandeau{flex-direction:column;} .bandeau .logo{height:80px;} .fleche{transform:rotate(90deg);}}")
 
 ui <- page_navbar(
-  id = "nav", title = "L'eau des data centers", theme = theme, fillable = FALSE,
+  id = "nav", fillable = FALSE, theme = theme,
+  title = div(class = "marque", bs_icon("droplet-fill", class = "goutte"),
+              div(div(class = "marque-titre", "L'eau des data centers"),
+                  div(class = "marque-sous", "SAÉ 5.EMS.01 · IUT de Carcassonne"))),
   window_title = "L'eau des data centers - SAÉ 5.EMS.01",
   sidebar = sidebar(id = "sb", width = 260, open = "desktop",
     h6(bs_icon("sliders"), " Hypothèses"),
