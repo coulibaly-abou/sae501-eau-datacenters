@@ -19,18 +19,18 @@ Application interactive tirée du Rapport 2. Elle reprend les mêmes calculs et 
 
 ## Onglets
 
-Tableau de bord tiré des rapports 1 et 2. Chaque graphique répond à une question et donne une phrase à retenir ; l'aide de lecture apparaît au survol de l'icône ⓘ.
+Tableau de bord tiré des rapports 1 et 2, pensé pour un oral : titres qui donnent le résultat, une phrase par bloc, méthode au survol de l'icône ⓘ.
 
-1. **Accueil** : titre, équipe, 4 chiffres clés.
-2. **Carte** : carte du monde cliquable ; un clic sur un pays zoome sur tous ses data centers et affiche sa fiche.
-3. **Régions** : chaque data center coloré selon le manque d'eau de sa région (WRI Aqueduct).
-4. **Saisons** : pluie et température mois par mois ; mois à la fois chauds et secs.
-5. **Usages** : sur 10 000 litres prélevés, la part de l'agriculture, de l'industrie, des habitants et des data centers ; pays à surveiller ; mesures réelles des sites Google.
-6. **Demain** : scénarios de l'AIE jusqu'en 2035, pays les plus exposés, prévision pour la France.
+1. **Accueil** : photo, titre, équipe, 4 chiffres clés.
+2. **Carte** : parcours en 4 étapes (où sont-ils, combien d'eau, où l'eau manque, où ça coince) ; zoom pays (régions et sites) ; fiche pays (jauge, « sur 10 000 litres », saisons, comparaison).
+3. **Régions** : densité des sites (noyau gaussien), points chauds dense × sec, manque d'eau aujourd'hui / 2030 / 2050 (Aqueduct), disparités par région.
+4. **Saisons** : effet ciseaux (pluie et degrés-jours de refroidissement), carte mois par mois, calendrier des 20 pays les plus équipés.
+5. **Usages** : sur 10 000 litres, équivalents d'un data center (1 / 10 / 100 MW), eau directe 9 % / indirecte 91 %, usages 1990-2035.
+6. **Demain** : scénarios AIE, pays les plus exposés en 2035, France avec la part de l'IA.
 7. **Méthode** : estimation en 5 étapes, choix du modèle de prévision, profils de pays (ACP + CAH).
-8. **Sources** : tableau par pays téléchargeable, sources, dates et limites.
+8. **Sources** : données par pays (CSV), sources et dates, limites.
 
-Le pays choisi reste le même dans les onglets Carte, Régions et Saisons.
+Le curseur d'année (2024-2035, bouton ▶) et le pays choisi s'appliquent à toute l'application.
 
 ## Lancer en local
 
