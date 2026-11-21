@@ -246,7 +246,10 @@ ui <- page_navbar(
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
           span(class = "titre-bloc", "La carte de l'étude en 4 étapes"),
-          selectInput("pays_sel", NULL, width = "210px", CHOIX_PAYS, "MONDE")),
+          div(class = "d-flex align-items-center gap-2",
+            tooltip(bs_icon("info-circle", class = "aide"),
+              "Étape 3 : couleur = manque d'eau du pays (ressource), bulle = eau des data centers (demande). Étape 4 : pays cumulant au moins 2 signaux : eau des data centers ≥ 1 % de celle des habitants ; ≥ 25 % des sites en région sèche ; stress hydrique du pays ≥ 50 %. Survol d'un pays : fourchette selon le coefficient d'eau."),
+            selectInput("pays_sel", NULL, width = "210px", CHOIX_PAYS, "MONDE"))),
         div(class = "parcours px-3 pt-3",
           radioButtons("etape", NULL, inline = TRUE, selected = "1",
             c("① Où sont-ils ?" = "1", "② Combien d'eau ?" = "2", "③ Où l'eau manque ?" = "3", "④ Où ça coince ?" = "4"))),
@@ -281,8 +284,7 @@ ui <- page_navbar(
         leafletOutput("carte_reg", height = "520px")),
       card(card_header(span(class = "titre-bloc", textOutput("reg_titre", inline = TRUE))),
            uiOutput("reg_chiffres"),
-           plotlyOutput("reg_barres", height = "430px"),
-           card_footer(class = "small text-muted", "Survolez une barre : nombre de sites, manque d'eau, risque de sécheresse (0 à 5)."))
+           plotlyOutput("reg_barres", height = "430px"))
     )
   ),
 
@@ -291,7 +293,7 @@ ui <- page_navbar(
     layout_columns(col_widths = c(7, 5),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
-          span(class = "titre-bloc", "L'effet ciseaux : besoin de froid en hausse, pluie en baisse"),
+          span(class = "titre-bloc", "Effet ciseaux : plus de chaleur, moins de pluie"),
           div(class = "d-flex align-items-center gap-2",
             tooltip(bs_icon("info-circle", class = "aide"),
               "Barres bleues : pluie moyenne du mois (normales 1991-2020, Banque mondiale CCKP). Courbe rouge : besoin de refroidissement, mesuré en degrés-jours au-dessus de 18 °C (indicateur standard de climatisation), calculé sur la température moyenne du mois. En orange : mois à la fois plus chauds et plus secs que la moyenne."),
@@ -313,12 +315,12 @@ ui <- page_navbar(
     ),
     card(full_screen = TRUE,
       card_header(class = "d-flex justify-content-between align-items-center",
-        span(class = "titre-bloc", "Calendrier de la tension : les 20 pays qui ont le plus de data centers"),
+        span(class = "titre-bloc", "Calendrier de la tension (20 pays les plus équipés)"),
         tooltip(bs_icon("info-circle", class = "aide"),
           "Pays classés du nord au sud. Rouge : mois chaud et sec ; orange clair : chaud ; jaune pâle : sec ; bleu : ni l'un ni l'autre (par rapport à la moyenne du pays).")),
       plotlyOutput("calendrier", height = "520px"),
       card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
-        "Au nord, la tension tombe surtout de mai à septembre ; au sud (Brésil, Afrique du Sud, Australie), plutôt de septembre à novembre, avant la saison des pluies. Une moyenne annuelle cache ces pics."))
+        "Nord : mai à septembre. Sud : septembre à novembre."))
   ),
 
   # ---- Usages de l'eau (arbitrages)
@@ -547,30 +549,23 @@ server <- function(input, output, session) {
   # Texte de l'étape (une ou deux phrases, chiffres à jour)
   output$etape_texte <- renderUI({
     r <- res(); p <- pres(); et <- input$etape
-    boite <- function(...) div(class = "etape-texte", span(class = "etape-num", et), div(...))
+    ligne <- function(icone, ...) div(class = "etape-texte", span(class = "etape-num", icone), div(...))
     if (input$pays_sel != "MONDE") {
       x <- r |> filter(iso3 == input$pays_sel); rg <- d$regions |> filter(iso3 == input$pays_sel) |> arrange(-sites)
-      return(div(class = "etape-texte", span(class = "etape-num", bs_icon("zoom-in")), div(
-        tags$b(paste0(x$country, " : ")), if (nrow(rg)) paste0(x$n_dc, " data centers recensés ; sur la carte, ", sum(rg$sites), " bâtiments géolocalisés (OpenStreetMap) dans ", nrow(rg), " régions. ",
-          "La plus équipée : ", rg$region[1], " (", rg$sites[1], " sites, manque d'eau ", tolower(sub(" \\(.*", "", rg$stress_region[1])), ").")
-          else "pas de site géolocalisé.", " ", actionLink("retour_monde", "Revenir au monde"))))
+      return(ligne(bs_icon("zoom-in"), tags$b(x$country), " · ",
+        if (nrow(rg)) paste0(sum(rg$sites), " sites géolocalisés, surtout en ", rg$region[1], " (", rg$sites[1], ")") else "pas de site géolocalisé",
+        " · ", actionLink("retour_monde", "Monde")))
     }
     top5 <- r |> slice_max(n_dc, n = 5)
     switch(et,
-      "1" = boite(tags$b(paste0(fmt(sum(r$n_dc), 0), " data centers dans ", nrow(r), " pays. ")),
-                  paste0("Plus de la moitié (", fmt(100 * sum(top5$n_dc) / sum(r$n_dc), 0), " %) sont dans 5 pays : ", paste(top5$country, collapse = ", "), ".")),
+      "1" = ligne(et, tags$b(paste0(fmt(sum(r$n_dc), 0), " data centers")), paste0(" · ", fmt(100 * sum(top5$n_dc) / sum(r$n_dc), 0), " % dans 5 pays")),
       "2" = { mx <- p |> filter(n_dc >= 5) |> slice_max(part, n = 1)
-              boite(tags$b(paste0(fmt(sum(r$eau), 0), " millions de m³ d'eau ", quand(), ". ")),
-                    paste0("Dans ", fmt(100 * mean(p$part < 0.1, na.rm = TRUE), 0), " % des pays, c'est moins de 0,1 % de l'eau du pays. Le plus exposé : ",
-                    mx$country, " (", pct(mx$part), ").")) },
-      "3" = boite(tags$b("Bulles = demande (eau des data centers), couleur = ressource (manque d'eau). "),
-                  paste0("Les grosses bulles sont surtout sur des pays jaunes : ",
-                  fmt(100 * sum(r$n_dc[!is.na(r$stress0) & r$stress0 < 50]) / sum(r$n_dc), 0),
-                  " % des sites sont dans des pays où l'eau ne manque pas.")),
-      "4" = { s <- arb() |> filter(signaux >= 2) |> arrange(-signaux)
-              boite(tags$b(paste0(nrow(s), " pays à surveiller, entourés en rouge : ")), paste0(paste(s$country, collapse = ", "), ". "),
-                    span(class = "text-muted", "Ils cumulent au moins 2 signaux : eau des data centers ≥ 1 % de celle des habitants, ",
-                         "≥ 25 % des sites en région sèche, pays déjà en stress (≥ 50 %).")) })
+              ligne(et, tags$b(paste0(fmt(sum(r$eau), 0), " millions de m³ ", quand())),
+                    paste0(" · moins de 0,1 % de l'eau du pays dans ", fmt(100 * mean(p$part < 0.1, na.rm = TRUE), 0), " % des cas · maximum : ", mx$country, " (", pct(mx$part), ")")) },
+      "3" = ligne(et, tags$b(paste0(fmt(100 * sum(r$n_dc[!is.na(r$stress0) & r$stress0 < 50]) / sum(r$n_dc), 0), " % des sites")),
+                  " sont dans des pays où l'eau ne manque pas"),
+      "4" = { s4 <- arb() |> filter(signaux >= 2) |> arrange(-signaux)
+              ligne(et, tags$b(paste0(nrow(s4), " pays à surveiller")), paste0(" · ", paste(s4$country, collapse = ", "))) })
   })
   observeEvent(input$retour_monde, updateSelectInput(session, "pays_sel", selected = "MONDE"))
 
@@ -604,10 +599,7 @@ server <- function(input, output, session) {
           div(div(class = "n", fmt(sum(r$n_dc), 0)), "data centers"),
           div(div(class = "n", fmt(sum(r$eau), 0)), "millions de m³"),
           div(div(class = "n", pct(p$part)), p$country)),
-        div(class = "mode-emploi",
-          div(bs_icon("1-circle"), " Suivez les 4 étapes au-dessus de la carte."),
-          div(bs_icon("2-circle"), " Cliquez sur un pays (ou une bulle) pour zoomer."),
-          div(bs_icon("3-circle"), " Faites défiler les années avec ▶ dans le panneau de gauche."))))
+        p(class = "small text-muted", bs_icon("hand-index"), " Cliquez sur un pays pour zoomer.")))
     }
     x <- r |> filter(iso3 == input$pays_sel)
     comp <- NULL
@@ -705,22 +697,16 @@ server <- function(input, output, session) {
 
   output$reg_texte <- renderUI({
     ds <- dens(); o <- osm_sel() |> filter(!is.na(.data[[input$horiz_reg]]))
-    if (is.null(ds) || nrow(o) == 0) return(div(class = "etape-texte", span(class = "etape-num", bs_icon("info")), div("Trop peu de sites géolocalisés pour estimer une densité.")))
-    dn <- ds$o |> filter(dense)
-    p_sec <- 100 * mean(sec(dn[[input$horiz_reg]]), na.rm = TRUE)
-    hs <- chauds()
-    rg <- reg_sel()
+    if (is.null(ds) || nrow(o) == 0) return(div(class = "etape-texte", span(class = "etape-num", bs_icon("info")), div("Trop peu de sites pour estimer une densité.")))
+    dn <- ds$o |> filter(dense); hs <- chauds(); rg <- reg_sel()
     plus_sec <- if (input$horiz_reg != "stress_region") {
       niv <- function(x) match(as.character(x), d$lab_aq[1:5])
-      n <- sum(niv(rg[[input$horiz_reg]]) > niv(rg$stress_region), na.rm = TRUE)
-      paste0(" ", n, " région", ifelse(n > 1, "s", ""), " équipée", ifelse(n > 1, "s", ""), " passe", ifelse(n > 1, "nt", ""),
-             " dans une catégorie plus sèche ", nom_hor(), ".")
+      paste0(" · ", sum(niv(rg[[input$horiz_reg]]) > niv(rg$stress_region), na.rm = TRUE), " régions plus sèches")
     } else ""
     div(class = "etape-texte", span(class = "etape-num", bs_icon("fire")), div(
-      tags$b(paste0("Les zones les plus denses regroupent ", nrow(dn), " sites : ", fmt(p_sec, 0), " % sont dans une région qui manque d'eau ", nom_hor(), ".")),
-      plus_sec,
-      if (nrow(hs)) span(paste0(" Points chauds (cercles rouges) : ", paste0(hs$region, if (input$pays_reg == "MONDE") paste0(" (", hs$pays, ")") else "", collapse = ", "), ".")),
-      span(class = "text-muted small", paste0(" Noyau gaussien, écart-type ≈ ", ds$sd_km, " km."))))
+      tags$b(paste0(fmt(100 * mean(sec(dn[[input$horiz_reg]]), na.rm = TRUE), 0), " % des sites des zones denses")),
+      paste0(" en région sèche ", nom_hor()), plus_sec,
+      if (nrow(hs)) paste0(" · point chaud : ", paste(hs$region, collapse = ", "))))
   })
 
   output$reg_titre <- renderText(if (input$pays_reg == "MONDE") "Régions les plus équipées du monde" else
@@ -782,12 +768,11 @@ server <- function(input, output, session) {
   })
   output$clim_retenir <- renderText({
     c <- CLIM |> filter(iso3 == input$pays_clim); n <- d$pays$country[d$pays$iso3 == input$pays_clim]
-    if (nrow(c) == 0) return("Pas de données climatiques pour ce pays.")
-    if (max(c$dj) < 1) return(paste0(n, " : il ne fait jamais plus de 18 °C en moyenne mensuelle ; les data centers peuvent se refroidir surtout avec l'air extérieur."))
-    m <- c |> slice_max(dj, n = 1, with_ties = FALSE)
-    paste0(n, " : en ", tolower(mois_long[m$mois]), ", le besoin de refroidissement est au plus haut (", fmt(m$dj, 0), " degrés-jours)",
-           if (m$pr < mean(c$pr)) paste0(" alors qu'il ne tombe que ", fmt(m$pr, 0), " mm de pluie, contre ", fmt(mean(c$pr), 0), " mm en moyenne : c'est l'effet ciseaux.")
-           else paste0(" mais il pleut plus que la moyenne (", fmt(m$pr, 0), " mm contre ", fmt(mean(c$pr), 0), " mm) : pas d'effet ciseaux ce mois-là."))
+    if (nrow(c) == 0) return("Pas de données climatiques.")
+    if (max(c$dj) < 1) return(paste0(n, " : jamais plus de 18 °C, refroidissement par l'air extérieur."))
+    m <- c |> slice_max(dj, n = 1, with_ties = FALSE); ecart <- 100 * (m$pr / mean(c$pr) - 1)
+    paste0(n, " : besoin de froid maximal en ", tolower(mois_long[m$mois]), ", pluie ", ifelse(ecart >= 0, "+", ""), fmt(ecart, 0), " %",
+           ifelse(ecart < 0, " : effet ciseaux.", " : pas d'effet ciseaux."))
   })
 
   output$mois_nom <- renderText(mois_long[input$mois_carte])
@@ -806,7 +791,7 @@ server <- function(input, output, session) {
   output$mois_retenir <- renderText({
     cm <- CLIM |> filter(mois == input$mois_carte) |> inner_join(d$pays |> select(iso3, n_dc), by = "iso3")
     p <- 100 * sum(cm$n_dc[cm$etat == etat_lab[1]]) / sum(cm$n_dc)
-    paste0(mois_long[input$mois_carte], " : ", fmt(p, 0), " % des data centers sont dans un pays chaud et sec ce mois-ci.")
+    paste0(mois_long[input$mois_carte], " : ", fmt(p, 0), " % des data centers en pays chaud et sec.")
   })
 
   output$calendrier <- renderPlotly({
