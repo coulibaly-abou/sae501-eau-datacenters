@@ -157,6 +157,9 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .parcours .selectize-control{min-width:210px;}
     .curseur-mois .irs-grid, .curseur-mois .irs-min, .curseur-mois .irs-max, .curseur-mois .irs-single{display:none;}
     .tuile.petite{padding:10px 8px;} .tuile.petite .gros{font-size:1.35rem;} .tuile.petite .bi{font-size:1.3rem;}
+    .famille{padding:8px 12px;margin-bottom:10px;background:#fafbfc;border-radius:6px;}
+    .famille-nom{font-weight:700;} .famille-n{font-weight:400;color:#888;font-size:.85rem;margin-left:6px;}
+    .famille-val{font-size:.85rem;color:#444;margin-top:2px;} .famille-ex{font-size:.8rem;color:#888;font-style:italic;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
     body.sur-accueil .bslib-sidebar-layout > .sidebar,
     body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
@@ -387,14 +390,31 @@ ui <- page_navbar(
         bloc("France : l'eau prélevée continue de baisser", "fr_prev",
              "Prélèvements d'eau de la France (tous usages), observés 2015-2022 puis prévus par le modèle de dérive, avec intervalle de confiance à 95 %.",
              textOutput("prev_retenir", inline = TRUE), "320px")),
-      nav_panel("Profils de pays (ACP)",
-        layout_columns(col_widths = c(6, 6),
-          bloc("4 familles de pays", "carte_classes",
-               "61 pays ayant au moins 10 data centers. ACP sur 8 indicateurs (taille, eau, richesse, électricité), puis classification ascendante hiérarchique (Ward, 5 axes, 96 % de l'information).",
-               "L'eau des data centers pèse surtout dans les petits pays riches.", "380px", leafletOutput),
-          bloc("Taille et eau séparent les pays", "acp_ind",
-               "Premier plan de l'ACP : axe 1 = taille du pays (39 %), axe 2 = eau et richesse (25 %).",
-               "Les pays très secs ont encore peu de data centers.", "380px"))))
+      nav_panel("ACP",
+        layout_columns(col_widths = c(5, 7),
+          bloc("2 axes résument 64 % de l'information", "acp_eboulis",
+               "Analyse en composantes principales (FactoMineR) sur 8 indicateurs centrés-réduits, 61 pays ayant au moins 10 data centers. Barres : part de l'information (inertie) portée par chaque axe ; courbe : cumul.",
+               "On garde 5 axes (96 %) pour la classification.", "340px"),
+          bloc("Axe 1 = taille, axe 2 = eau et richesse", "acp_cercle",
+               "Cercle des corrélations : plus une flèche est longue, mieux la variable est représentée. En rouge : part de l'eau des data centers, variable supplémentaire (elle ne construit pas les axes).",
+               "La part de l'eau des data centers est plus forte dans les petits pays.", "340px")),
+        bloc("Les 61 pays sur le premier plan", "acp_ind",
+             "Coordonnées des pays sur les axes 1 et 2, colorées selon leur famille (onglet Classification).",
+             "Les pays très secs (Émirats, Arabie saoudite) se détachent, mais ont encore peu de data centers.", "420px")),
+      nav_panel("Classification",
+        layout_columns(col_widths = c(7, 5),
+          bloc("4 familles : la coupe la plus nette", "dendro",
+               "Classification ascendante hiérarchique (méthode de Ward) sur les 5 premiers axes de l'ACP. Plus deux pays se rejoignent bas, plus ils se ressemblent. La ligne rouge coupe l'arbre là où le saut de hauteur est le plus grand. Couleur des points : famille finale après consolidation par k-means (fonction HCPC), d'où quelques pays rattachés à une famille voisine de leur branche.",
+               "Saut entre 0,56 et 1,17 : 4 familles.", "760px"),
+          card(card_header(class = "d-flex justify-content-between align-items-center",
+                 span(class = "titre-bloc", "Portrait des 4 familles"),
+                 tooltip(bs_icon("info-circle", class = "aide"), "Valeurs médianes de chaque famille.")),
+               card_body(uiOutput("portrait")),
+               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
+                 "L'eau des data centers pèse surtout dans les petits pays riches."))),
+        bloc("Carte des 4 familles", "carte_classes",
+             "Pays colorés selon leur famille. Gris : pays non classés (moins de 10 data centers).",
+             "Les grands pays équipés ne sont pas ceux où l'eau des data centers pèse le plus.", "380px", leafletOutput)))
   ),
 
   # ---- Sources
@@ -1086,6 +1106,78 @@ server <- function(input, output, session) {
       layout(xaxis = list(title = "← petits pays          grands pays →", zeroline = TRUE),
              yaxis = list(title = "← pays secs          eau et richesse →", zeroline = TRUE),
              legend = list(orientation = "h", x = 0, y = -0.22))
+  })
+
+  # ---------- Méthode : ACP et classification
+  output$acp_eboulis <- renderPlotly({
+    e <- d$acp_eig |> mutate(axe = factor(axe, axe))
+    plot_ly(e, x = ~axe) |>
+      add_bars(y = ~inertie, name = "Par axe", marker = list(color = c("#1f6f8b", "#1f6f8b", "#9ecae1", "#9ecae1", "#9ecae1")),
+               text = ~paste0(fmt(inertie, 0), " %"), textposition = "outside", hoverinfo = "none") |>
+      add_lines(y = ~cumul, name = "Cumul", line = list(color = "#d35400", width = 3), marker = list(color = "#d35400"),
+                mode = "lines+markers", hovertext = ~paste0("Cumul : ", fmt(cumul, 0), " %"), hoverinfo = "text") |>
+      layout(xaxis = list(title = ""), yaxis = list(title = "% de l'information", range = c(0, 105)), legend = LEG)
+  })
+  output$acp_cercle <- renderPlotly({
+    v <- d$acp_var; th <- seq(0, 2 * pi, length.out = 200)
+    seg <- function(df) data.frame(x = as.vector(rbind(0, df$dim1, NA)), y = as.vector(rbind(0, df$dim2, NA)))
+    act <- v[!v$sup, ]; sup <- v[v$sup, ]
+    plot_ly(type = "scatter", mode = "lines") |>
+      add_trace(x = cos(th), y = sin(th), type = "scatter", mode = "lines", line = list(color = "#ccc"), hoverinfo = "none", showlegend = FALSE) |>
+      add_trace(data = seg(act), x = ~x, y = ~y, type = "scatter", mode = "lines", line = list(color = "#1f6f8b", width = 2),
+                hoverinfo = "none", showlegend = FALSE) |>
+      add_trace(data = seg(sup), x = ~x, y = ~y, type = "scatter", mode = "lines", line = list(color = "#c0392b", width = 2.5, dash = "dash"),
+                hoverinfo = "none", showlegend = FALSE) |>
+      add_trace(data = v, x = ~dim1 * 1.12, y = ~dim2 * 1.1, text = ~variable, type = "scatter", mode = "text",
+                textfont = list(color = ifelse(v$sup, "#c0392b", "#333"), size = 11),
+                hovertext = ~paste0(variable, "<br>Axe 1 : ", fmt(dim1, 2), "<br>Axe 2 : ", fmt(dim2, 2)), hoverinfo = "text", showlegend = FALSE) |>
+      layout(xaxis = list(title = "Axe 1 : taille du pays", range = c(-1.45, 1.45), zeroline = TRUE),
+             yaxis = list(title = "Axe 2 : eau et richesse", range = c(-1.2, 1.2), zeroline = TRUE, scaleanchor = "x"))
+  })
+
+  # Dendrogramme (arbre hclust de HCPC), à l'horizontale
+  output$dendro <- renderPlotly({
+    h <- d$cah_arbre; n <- length(h$order)
+    pos <- numeric(n); pos[h$order] <- seq_len(n)
+    xm <- numeric(n - 1); segs <- vector("list", n - 1)
+    gx <- function(j) if (j < 0) pos[-j] else xm[j]
+    gh <- function(j) if (j < 0) 0 else h$height[j]
+    for (i in seq_len(n - 1)) {
+      a <- h$merge[i, 1]; b <- h$merge[i, 2]; xa <- gx(a); xb <- gx(b); hi <- h$height[i]; xm[i] <- (xa + xb) / 2
+      segs[[i]] <- rbind(c(gh(a), xa, hi, xa), c(gh(b), xb, hi, xb), c(hi, xa, hi, xb))
+    }
+    sg <- do.call(rbind, segs)
+    df <- data.frame(x = as.vector(rbind(sg[, 1], sg[, 3], NA)), y = as.vector(rbind(sg[, 2], sg[, 4], NA)))
+    feuilles <- tibble(country = h$labels, y = pos) |> left_join(d$classes |> select(country, nom_classe), by = "country")
+    coupe <- mean(sort(h$height, decreasing = TRUE)[3:4])
+    p <- plot_ly() |>
+      add_trace(data = df, x = ~x, y = ~y, type = "scatter", mode = "lines", line = list(color = "#7a8a94", width = 1.2),
+                hoverinfo = "none", showlegend = FALSE)
+    for (cl in names(col_classes)) {
+      f <- feuilles |> filter(nom_classe == cl)
+      p <- p |> add_trace(data = f, x = 0, y = ~y, type = "scatter", mode = "markers", name = cl,
+                          marker = list(color = col_classes[[cl]], size = 9), text = ~country, hoverinfo = "text")
+    }
+    p |> layout(shapes = list(list(type = "line", x0 = coupe, x1 = coupe, y0 = 0, y1 = n + 1, line = list(color = "#c0392b", dash = "dash", width = 2))),
+                xaxis = list(title = "Hauteur (perte d'inertie)", zeroline = FALSE),
+                yaxis = list(title = "", tickvals = feuilles$y, ticktext = feuilles$country, tickfont = list(size = 9), range = c(0, n + 2)),
+                legend = list(orientation = "h", x = 0, y = 1.04), margin = list(l = 10, t = 30))
+  })
+  output$portrait <- renderUI({
+    t <- d$classes |> group_by(nom_classe) |>
+      summarise(pays = n(), sites = median(n_dc), hab = median(population) / 1e6, pib = median(pib_hab),
+                stress = median(stress_hydrique), part = median(part_central),
+                ex = paste(head(country[order(-n_dc)], 3), collapse = ", "), .groups = "drop") |>
+      arrange(match(nom_classe, names(col_classes)))
+    carte <- function(i) {
+      x <- t[i, ]
+      div(class = "famille", style = paste0("border-left:5px solid ", col_classes[[x$nom_classe]], ";"),
+        div(class = "famille-nom", x$nom_classe, span(class = "famille-n", paste(x$pays, "pays"))),
+        div(class = "famille-val", paste0(fmt(x$sites, 0), " sites · ", fmt(x$hab, 0), " M hab. · ", fmt(x$pib / 1000, 0), " k$/hab. · stress ",
+                                          fmt(x$stress, 0), " % · eau DC ", pct(x$part))),
+        div(class = "famille-ex", x$ex))
+    }
+    tagList(lapply(seq_len(nrow(t)), carte))
   })
 
   # ---------- Sources

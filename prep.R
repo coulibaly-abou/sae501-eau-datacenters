@@ -235,6 +235,23 @@ fix_enc <- function(x) { y <- iconv(x, "UTF-8", "CP1252"); Encoding(y) <- "UTF-8
   ifelse(grepl("Ã|Å", x) & !is.na(y) & validUTF8(y), y, x) }
 osm <- osm |> mutate(region = fix_enc(region))
 regions <- regions |> mutate(region = fix_enc(region))
+# Noms de régions en français (les plus fréquentes ; les autres restent dans la langue locale)
+noms_fr <- c("Virginia" = "Virginie", "England" = "Angleterre", "California" = "Californie", "Noord-Holland" = "Hollande-Septentrionale",
+  "Hessen" = "Hesse", "Washington" = "État de Washington", "New South Wales" = "Nouvelle-Galles du Sud", "Pennsylvania" = "Pennsylvanie",
+  "Georgia" = "Géorgie (États-Unis)", "New York" = "État de New York", "Bayern" = "Bavière", "Nordrhein-Westfalen" = "Rhénanie-du-Nord-Westphalie",
+  "Lombardia" = "Lombardie", "Vlaanderen" = "Flandre", "North Carolina" = "Caroline du Nord", "South Carolina" = "Caroline du Sud",
+  "Moscow City" = "Moscou", "Moskva" = "Moscou (oblast)", "Región Metropolitana de Santiago" = "Région de Santiago", "Southern Finland" = "Finlande du Sud",
+  "Baden-Württemberg" = "Bade-Wurtemberg", "Comunidad de Madrid" = "Communauté de Madrid", "Niedersachsen" = "Basse-Saxe",
+  "Zürich" = "Zurich", "Australian Capital Territory" = "Territoire de la capitale australienne", "Mazowieckie" = "Mazovie",
+  "New Mexico" = "Nouveau-Mexique", "Florida" = "Floride", "Missouri" = "Missouri", "Sachsen" = "Saxe", "Scotland" = "Écosse",
+  "Prague" = "Prague", "Jawa Barat" = "Java occidental", "Hovedstaden" = "Région de Copenhague", "Rheinland-Pfalz" = "Rhénanie-Palatinat",
+  "British Columbia" = "Colombie-Britannique", "Noord-Brabant" = "Brabant-Septentrional", "Zuid-Holland" = "Hollande-Méridionale",
+  "Cataluña" = "Catalogne", "Lazio" = "Latium", "Wales" = "Pays de Galles", "Hamburg" = "Hambourg", "Bruxelles" = "Bruxelles",
+  "Moscow" = "Moscou", "Suðurnes" = "Suðurnes (Islande)", "Tokyo" = "Tokyo", "North Dakota" = "Dakota du Nord",
+  "South Dakota" = "Dakota du Sud", "West Virginia" = "Virginie-Occidentale", "Louisiana" = "Louisiane")
+traduire <- function(x) ifelse(!is.na(x) & x %in% names(noms_fr), noms_fr[x], x)
+osm <- osm |> mutate(region = traduire(region))
+regions <- regions |> mutate(region = traduire(region))
 
 # Rapport 1 : stress futur de la région des sites (WRI Aqueduct, scénario tendanciel « business as usual »)
 futur_sites <- osm |>
@@ -363,7 +380,8 @@ saveRDS(list(
   osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region, stress_2030, stress_2050),
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
-  refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites, secteurs_ts = secteurs_ts
+  refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites, secteurs_ts = secteurs_ts,
+  cah_arbre = cah$call$t$tree, acp_cor = acp$var$cor[, 1:3]
 ), "app/app_data.rds")
 cat("Sites OSM :", nrow(osm), "| % en région stress élevé/extrême :",
     round(100 * mean(osm$bws_cat >= 3, na.rm = TRUE), 1), "\n")
