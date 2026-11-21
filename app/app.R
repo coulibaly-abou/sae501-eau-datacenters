@@ -107,7 +107,36 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .fiche dt{font-weight:500;color:#666;font-size:.9rem;} .fiche dd{font-size:1.1rem;margin-bottom:.5rem;}
     .fiche .equiv{font-size:.85rem;color:#777;}
     .barre-carte .shiny-input-container{margin-bottom:0 !important;}
-    @media (max-width:900px){.bandeau{flex-direction:column;} .bandeau .logo{height:80px;} .fleche{transform:rotate(90deg);}}")
+    /* Accueil */
+    .accueil{margin:-1.5rem -1.5rem 0 -1.5rem;}
+    .bande-logos{display:flex;justify-content:space-between;align-items:center;padding:14px 48px;background:#fff;}
+    .bande-logos img{height:62px;width:auto;}
+    .bande-logos span{font-size:.8rem;letter-spacing:.12em;text-transform:uppercase;color:#7a8a94;}
+    .hero{position:relative;min-height:62vh;display:flex;align-items:center;justify-content:center;text-align:center;
+          background-color:#123f52;}
+    .hero-contenu{max-width:900px;padding:70px 24px;color:#fff;}
+    .hero-sur{font-size:.85rem;letter-spacing:.3em;text-transform:uppercase;color:#7fd3f7;margin-bottom:14px;}
+    .hero h1{font-size:4rem;font-weight:800;margin:0 0 18px;letter-spacing:-.01em;text-shadow:0 2px 20px rgba(0,0,0,.4);}
+    .hero-question{font-size:1.45rem;font-weight:300;margin:0 0 34px;color:rgba(255,255,255,.92);}
+    .btn-hero{background:#fff !important;color:#123f52 !important;border:0;border-radius:999px;padding:.85rem 2.4rem;
+              font-size:1.1rem;font-weight:700;box-shadow:0 6px 24px rgba(0,0,0,.3);}
+    .btn-hero:hover{background:#7fd3f7 !important;}
+    .hero-noms{margin-top:44px;font-size:1rem;color:rgba(255,255,255,.9);letter-spacing:.04em;}
+    .hero-noms span{font-size:.85rem;color:rgba(255,255,255,.65);}
+    .chiffres{display:flex;justify-content:center;flex-wrap:wrap;padding:56px 24px;background:#fff;}
+    .chiffre{flex:1 1 200px;max-width:300px;text-align:center;padding:0 24px;border-left:1px solid #e3e9ee;}
+    .chiffre:first-child{border-left:0;}
+    .chiffre .nb{font-size:2.6rem;font-weight:800;color:#1f6f8b;line-height:1;}
+    .chiffre .lib{margin-top:10px;color:#5b6b75;font-size:.95rem;}
+    .photos{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 48px 40px;background:#fff;}
+    .photo{height:300px;border-radius:16px;background-size:cover;background-position:center;position:relative;overflow:hidden;
+           box-shadow:0 8px 30px rgba(0,0,0,.12);}
+    .photo .legende{position:absolute;left:0;right:0;bottom:0;padding:22px 24px;color:#fff;font-size:.95rem;
+                    background:linear-gradient(0deg,rgba(0,0,0,.75),rgba(0,0,0,0));}
+    .photo .legende b{font-size:1.15rem;}
+    .credits{text-align:center;font-size:.72rem;color:#9aa6ad;padding:0 0 24px;background:#fff;}
+    @media (max-width:900px){.hero h1{font-size:2.6rem;} .photos{grid-template-columns:1fr;padding:0 16px 30px;}
+      .bande-logos{padding:10px 16px;} .bande-logos span{display:none;} .chiffre{border-left:0;margin-bottom:24px;} .fleche{transform:rotate(90deg);}}")
 
 ui <- page_navbar(
   id = "nav", fillable = FALSE, theme = theme,
@@ -125,24 +154,31 @@ ui <- page_navbar(
 
   # ---- Accueil
   nav_panel("Accueil", value = "Accueil", icon = bs_icon("house"),
-    div(class = "bandeau d-flex justify-content-between align-items-center",
-      tags$img(src = "logo_iut.png", class = "logo", alt = "IUT Perpignan Carcassonne Narbonne"),
-      div(class = "cadre-titre text-center",
-        div(class = "sur-titre", "SAÉ 5.EMS.01 · Mener une étude statistique dans un domaine d'application"),
-        h1("L'eau des data centers"),
-        p(class = "sous-titre", "Estimations, limites, analyse temporelle et analyse multivariée"),
-        hr(),
-        p(class = "sous-titre", tags$i("Les ressources en eau suffiront-elles pour les data centers, dédiés à l'IA ou non, en plus des autres usages, aujourd'hui et en 2035 ?"))),
-      tags$img(src = "logo_upvd.png", class = "logo", alt = "Université de Perpignan Via Domitia")),
-    div(class = "auteurs text-center",
-      tags$b("Ayi AMAVIGAN"), " · ", tags$b("Ada GADJI"), " · ", tags$b("Aboubakar COULIBALY"), br(),
-      span(class = "small text-muted", "BUT Science des données, 3e année · IUT de Carcassonne · 2026-2027 · Professeure : Mme Viguier-Pla")),
-    layout_columns(col_widths = c(3, 3, 3, 3), fill = FALSE,
-      div(class = "tuile", bs_icon("hdd-rack"), div(class = "gros", "6 239"), "data centers dans 135 pays"),
-      div(class = "tuile", bs_icon("droplet-half"), div(class = "gros", "336 millions m³"), "d'eau utilisée en 2024"),
-      div(class = "tuile", bs_icon("percent"), div(class = "gros", "< 0,1 %"), "de l'eau d'un pays, dans 9 pays sur 10"),
-      div(class = "tuile", bs_icon("geo-alt"), div(class = "gros", "27 %"), "des sites dans une région qui manque d'eau")),
-    div(class = "text-center my-4", actionButton("entrer", "Découvrir l'étude", icon = bs_icon("arrow-right-circle"), class = "btn-primary btn-lg px-5"))
+    div(class = "accueil",
+      div(class = "bande-logos",
+        tags$img(src = "logo_iut.png", alt = "IUT Perpignan Carcassonne Narbonne"),
+        span("BUT Science des données · SAÉ 5.EMS.01 · 2026-2027"),
+        tags$img(src = "logo_upvd.png", alt = "Université de Perpignan Via Domitia")),
+      div(class = "hero", style = "background:linear-gradient(180deg,rgba(8,30,44,.50) 0%,rgba(8,30,44,.80) 100%),url('photo_serveurs.jpg') center/cover no-repeat;",
+        div(class = "hero-contenu",
+          div(class = "hero-sur", "Étude statistique"),
+          h1("L'eau des data centers"),
+          p(class = "hero-question", "Les ressources en eau suffiront-elles, aujourd'hui et en 2035 ?"),
+          actionButton("entrer", "Découvrir l'étude", icon = bs_icon("arrow-right"), class = "btn-hero"),
+          div(class = "hero-noms", "Ayi AMAVIGAN · Ada GADJI · Aboubakar COULIBALY", br(),
+              span("Professeure : Mme Viguier-Pla · IUT de Carcassonne")))),
+      div(class = "chiffres",
+        div(class = "chiffre", div(class = "nb", "6 239"), div(class = "lib", "data centers dans 135 pays")),
+        div(class = "chiffre", div(class = "nb", "336 M m³"), div(class = "lib", "d'eau utilisée en 2024")),
+        div(class = "chiffre", div(class = "nb", "< 0,1 %"), div(class = "lib", "de l'eau d'un pays, 9 fois sur 10")),
+        div(class = "chiffre", div(class = "nb", "27 %"), div(class = "lib", "des sites en région qui manque d'eau"))),
+      div(class = "photos",
+        div(class = "photo", style = "background-image:url('photo_ashburn.jpg');",
+            div(class = "legende", tags$b("Ashburn, Virginie"), br(), "La plus forte concentration de data centers au monde")),
+        div(class = "photo", style = "background-image:url('photo_council_bluffs.jpg');",
+            div(class = "legende", tags$b("Council Bluffs, Iowa"), br(), "Le site Google qui consomme le plus d'eau : 5 millions de m³ en 2025"))),
+      div(class = "credits", "Photos Wikimedia Commons : BalticServers.com (CC BY-SA 3.0), Theodore Christopher (CC0), Chad Davis (CC BY 2.0).")
+    )
   ),
 
   # ---- Carte du monde

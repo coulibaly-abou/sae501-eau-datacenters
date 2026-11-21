@@ -56,3 +56,5 @@ shiny::runApp("app")
 | Fond de carte | Natural Earth (domaine public) | 1:50m |
 
 Les logos de l'IUT et de l'Université de Perpignan Via Domitia appartiennent à leurs établissements.
+
+Photos de l'accueil (Wikimedia Commons) : « BalticServers data center » par BalticServers.com (CC BY-SA 3.0) ; « Data centers in Ashburn » par Theodore Christopher (CC0) ; « Google Data Center, Council Bluffs Iowa » par Chad Davis (CC BY 2.0).
