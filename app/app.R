@@ -150,6 +150,8 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .litre .val{text-align:right;font-weight:600;} .litre.dc .barre div{background:#d35400;} .litre.dc{color:#d35400;font-weight:700;}
     .mode-emploi div{margin:6px 0;font-size:.9rem;} .mode-emploi .bi{color:#1f6f8b;}
     .comparaison table{font-size:.82rem;}
+    .sep-vert{width:1px;height:28px;background:#cfd8dc;}
+    .parcours .shiny-input-container{margin-bottom:0 !important;width:auto !important;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
     body.sur-accueil .bslib-sidebar-layout > .sidebar,
     body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
@@ -260,14 +262,22 @@ ui <- page_navbar(
     layout_columns(col_widths = c(8, 4),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
-          span(class = "titre-bloc", "Un pays peut avoir des régions sèches"),
+          span(class = "titre-bloc", "Où se concentrent les data centers, et où l'eau manque-t-elle ?"),
           div(class = "d-flex align-items-center gap-2",
-            tooltip(bs_icon("info-circle", class = "aide"), "Chaque point est un data center (OpenStreetMap, 20/09/2026). Sa couleur indique le manque d'eau de SA région (WRI Aqueduct)."),
+            tooltip(bs_icon("info-circle", class = "aide"),
+              "Densité : estimation par noyau gaussien (méthode non paramétrique) sur les sites OpenStreetMap (20/09/2026). Les contours entourent les zones qui regroupent les 50 %, 25 % et 10 % de sites les plus concentrés. Couleur des points : manque d'eau de la région (WRI Aqueduct ; 2030 et 2050 : scénario tendanciel)."),
             selectInput("pays_reg", NULL, width = "210px",
                         c("Monde entier" = "MONDE", setNames(sort(unique(d$osm$iso3)), d$osm$pays[match(sort(unique(d$osm$iso3)), d$osm$iso3)])), "MONDE"))),
-        leafletOutput("carte_reg", height = "540px"),
-        card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("reg_retenir", inline = TRUE))),
-      card(card_header(span(class = "titre-bloc", "Régions avec le plus de sites")), DTOutput("tab_reg"))
+        div(class = "parcours d-flex flex-wrap align-items-center column-gap-4 px-3 pt-3",
+          radioButtons("vue_reg", NULL, inline = TRUE, c("Densité" = "densite", "Sites" = "points"), "densite"),
+          span(class = "sep-vert"),
+          radioButtons("horiz_reg", NULL, inline = TRUE, c("Aujourd'hui" = "stress_region", "2030" = "stress_2030", "2050" = "stress_2050"), "stress_region")),
+        div(class = "px-3", uiOutput("reg_texte")),
+        leafletOutput("carte_reg", height = "520px")),
+      card(card_header(span(class = "titre-bloc", textOutput("reg_titre", inline = TRUE))),
+           uiOutput("reg_chiffres"),
+           plotlyOutput("reg_barres", height = "430px"),
+           card_footer(class = "small text-muted", "Survolez une barre : nombre de sites, manque d'eau, risque de sécheresse (0 à 5)."))
     )
   ),
 
@@ -600,30 +610,105 @@ server <- function(input, output, session) {
              yaxis = list(title = "", tickfont = list(size = 9)), yaxis2 = list(title = "", overlaying = "y", side = "right", showgrid = FALSE, tickfont = list(size = 9)))
   })
 
-  # ---------- Régions
+  # ---------- Régions : densité, points chauds, futur, disparités
   osm_sel <- reactive(if (input$pays_reg == "MONDE") d$osm else d$osm |> filter(iso3 == input$pays_reg))
+  reg_sel <- reactive(if (input$pays_reg == "MONDE") d$regions else d$regions |> filter(iso3 == input$pays_reg))
+  nom_hor <- reactive(c(stress_region = "aujourd'hui", stress_2030 = "en 2030", stress_2050 = "en 2050")[[input$horiz_reg]])
+  sec <- function(x) as.character(x) %in% d$lab_aq[4:5]
+
+  # Estimation de densité par noyau (MASS::kde2d) et zones de plus forte densité
+  dens <- reactive({
+    o <- osm_sel() |> filter(!is.na(lat), !is.na(lon))
+    if (nrow(o) < 15) return(NULL)
+    monde <- input$pays_reg == "MONDE"
+    # kde2d utilise h/4 comme écart-type : monde = 0,75° (~80 km) ; pays = règle de référence normale / 2
+    h <- if (monde) c(3, 3) else pmin(3, pmax(0.4, c(MASS::bandwidth.nrd(o$lon), MASS::bandwidth.nrd(o$lat)) / 2))
+    lims <- c(range(o$lon) + c(-1, 1) * h[1], range(o$lat) + c(-1, 1) * h[2])
+    k <- MASS::kde2d(o$lon, o$lat, h = h, n = if (monde) c(500, 250) else c(160, 160), lims = lims)
+    zp <- k$z[cbind(findInterval(o$lon, k$x, all.inside = TRUE), findInterval(o$lat, k$y, all.inside = TRUE))]
+    niv <- quantile(zp, c(0.5, 0.75, 0.9))
+    list(k = k, niv = niv, o = o |> mutate(densite = zp, dense = zp >= niv[[2]]), sd_km = round(h[1] / 4 * 111))
+  })
+
   output$carte_reg <- renderLeaflet({
-    o <- osm_sel() |> filter(!is.na(stress_region))
+    o <- osm_sel() |> filter(!is.na(.data[[input$horiz_reg]]))
+    req(nrow(o) > 0)
+    st <- o[[input$horiz_reg]]
     pal <- colorFactor(col_aq, levels = d$lab_aq)
-    leaflet() |> addTiles() |>
-      addCircleMarkers(lng = o$lon, lat = o$lat, radius = if (input$pays_reg == "MONDE") 3 else 5,
-                       stroke = TRUE, weight = 0.5, color = "#333", fillColor = pal(o$stress_region), fillOpacity = 0.85,
-                       label = lapply(paste0("<b>", o$nom, "</b><br>", o$region, " (", o$pays, ")<br>Manque d'eau : ", o$stress_region), htmltools::HTML)) |>
-      addLegend("bottomleft", colors = col_aq, labels = d$lab_aq, title = "Manque d'eau de la région", opacity = 0.9) |>
-      fitBounds(min(o$lon), min(o$lat), max(o$lon), max(o$lat))
+    l <- leaflet() |> addProviderTiles(providers$Esri.WorldGrayCanvas)
+    ds <- dens()
+    if (input$vue_reg == "densite" && !is.null(ds)) {
+      cols <- c("#fdd0a2", "#fd8d3c", "#a63603")
+      for (i in 1:3) {
+        cl <- contourLines(ds$k$x, ds$k$y, ds$k$z, levels = ds$niv[[i]])
+        for (c1 in cl) l <- l |> addPolygons(lng = c1$x, lat = c1$y, fillColor = cols[i], fillOpacity = 0.35, color = cols[i], weight = 1.2, opacity = 0.9)
+      }
+      l <- l |> addLegend("topright", colors = cols, opacity = 0.8, title = "Concentration des sites",
+                          labels = c("zone des 50 % les plus concentrés", "zone des 25 %", "zone des 10 %"))
+    }
+    l <- l |> addCircleMarkers(lng = o$lon, lat = o$lat, radius = if (input$pays_reg == "MONDE") 2.5 else 4.5, stroke = TRUE, weight = 0.5, color = "#333",
+                               fillColor = pal(st), fillOpacity = if (input$vue_reg == "densite") 0.75 else 0.9,
+                               label = lapply(paste0("<b>", o$nom, "</b><br>", o$region, " (", o$pays, ")<br>Manque d'eau ", nom_hor(), " : ", st), htmltools::HTML))
+    # Points chauds : régions avec beaucoup de sites dans une zone dense ET une région qui manque d'eau
+    hs <- chauds()
+    if (nrow(hs)) l <- l |>
+      addCircleMarkers(lng = hs$lon, lat = hs$lat, radius = 16, fill = FALSE, color = "#c0392b", weight = 3, opacity = 1) |>
+      addLabelOnlyMarkers(lng = hs$lon, lat = hs$lat, label = hs$region,
+                          labelOptions = labelOptions(noHide = TRUE, direction = "right", offset = c(14, 0), textOnly = TRUE, className = "etiq-surv"))
+    l |> addLegend("bottomleft", colors = col_aq[1:5], labels = d$lab_aq[1:5], opacity = 0.9,
+                   title = htmltools::HTML(paste0("Manque d'eau de la région<br>", nom_hor()))) |>
+      fitBounds(unname(quantile(o$lon, 0.01)), unname(quantile(o$lat, 0.01)), unname(quantile(o$lon, 0.99)), unname(quantile(o$lat, 0.99)))
   })
-  output$tab_reg <- renderDT({
-    t <- (if (input$pays_reg == "MONDE") d$regions else d$regions |> filter(iso3 == input$pays_reg)) |>
-      arrange(-sites) |> transmute(Région = region, Pays = pays, Sites = sites, `Manque d'eau` = sub(" \\(.*", "", stress_region))
-    if (input$pays_reg != "MONDE") t <- t |> select(-Pays)
-    datatable(t, rownames = FALSE, options = list(pageLength = 10, dom = "tp", scrollX = TRUE))
+
+  chauds <- reactive({
+    ds <- dens(); if (is.null(ds)) return(tibble(region = character(), lon = numeric(), lat = numeric(), n = integer()))
+    ds$o |> filter(dense, sec(.data[[input$horiz_reg]]), !is.na(region)) |>
+      group_by(region, pays) |> summarise(n = n(), lon = mean(lon), lat = mean(lat), .groups = "drop") |>
+      filter(n >= 3) |> slice_max(n, n = if (input$pays_reg == "MONDE") 6 else 3, with_ties = FALSE)
   })
-  output$reg_retenir <- renderText({
-    o <- osm_sel() |> filter(!is.na(stress_region))
-    if (nrow(o) == 0) return("Pas de site géolocalisé pour ce pays.")
-    top <- o |> count(region, sort = TRUE) |> slice(1)
-    paste0(fmt(100 * mean(o$stress_region %in% d$lab_aq[4:5]), 0), " % des ", nrow(o), " sites sont dans une région qui manque d'eau. ",
-           "Région la plus équipée : ", top$region, " (", top$n, " sites).")
+
+  output$reg_texte <- renderUI({
+    ds <- dens(); o <- osm_sel() |> filter(!is.na(.data[[input$horiz_reg]]))
+    if (is.null(ds) || nrow(o) == 0) return(div(class = "etape-texte", span(class = "etape-num", bs_icon("info")), div("Trop peu de sites géolocalisés pour estimer une densité.")))
+    dn <- ds$o |> filter(dense)
+    p_sec <- 100 * mean(sec(dn[[input$horiz_reg]]), na.rm = TRUE)
+    hs <- chauds()
+    rg <- reg_sel()
+    plus_sec <- if (input$horiz_reg != "stress_region") {
+      niv <- function(x) match(as.character(x), d$lab_aq[1:5])
+      n <- sum(niv(rg[[input$horiz_reg]]) > niv(rg$stress_region), na.rm = TRUE)
+      paste0(" ", n, " région", ifelse(n > 1, "s", ""), " équipée", ifelse(n > 1, "s", ""), " passe", ifelse(n > 1, "nt", ""),
+             " dans une catégorie plus sèche ", nom_hor(), ".")
+    } else ""
+    div(class = "etape-texte", span(class = "etape-num", bs_icon("fire")), div(
+      tags$b(paste0("Les zones les plus denses regroupent ", nrow(dn), " sites : ", fmt(p_sec, 0), " % sont dans une région qui manque d'eau ", nom_hor(), ".")),
+      plus_sec,
+      if (nrow(hs)) span(paste0(" Points chauds (cercles rouges) : ", paste0(hs$region, if (input$pays_reg == "MONDE") paste0(" (", hs$pays, ")") else "", collapse = ", "), ".")),
+      span(class = "text-muted small", paste0(" Noyau gaussien, écart-type ≈ ", ds$sd_km, " km."))))
+  })
+
+  output$reg_titre <- renderText(if (input$pays_reg == "MONDE") "Régions les plus équipées du monde" else
+    paste("Disparités :", d$osm$pays[match(input$pays_reg, d$osm$iso3)]))
+  output$reg_chiffres <- renderUI({
+    rg <- reg_sel(); o <- osm_sel() |> filter(!is.na(.data[[input$horiz_reg]]))
+    if (nrow(rg) == 0) return(NULL)
+    top <- rg |> slice_max(sites, n = 1, with_ties = FALSE)
+    card_body(class = "pb-0", div(class = "chiffres-fiche",
+      div(div(class = "n", nrow(rg)), "régions équipées"),
+      div(div(class = "n", paste0(fmt(100 * top$sites / sum(rg$sites), 0), " %")), paste("des sites en", top$region)),
+      div(div(class = "n", paste0(fmt(100 * mean(sec(o[[input$horiz_reg]])), 0), " %")), paste("en région sèche", nom_hor()))))
+  })
+  output$reg_barres <- renderPlotly({
+    rg <- reg_sel() |> slice_max(sites, n = 15, with_ties = FALSE) |>
+      mutate(st = as.character(.data[[input$horiz_reg]]), st = coalesce(st, "Non renseigné"),
+             lab = if (input$pays_reg == "MONDE") paste0(region, " (", pays, ")") else region) |>
+      arrange(sites) |> mutate(lab = factor(lab, unique(lab)))
+    plot_ly(rg, y = ~lab, x = ~sites, type = "bar", orientation = "h", color = ~st, colors = c(col_aq, "Non renseigné" = "#bbbbbb"),
+            hovertext = ~paste0("<b>", region, "</b><br>", sites, " sites<br>Manque d'eau ", nom_hor(), " : ", st,
+                                "<br>Risque de sécheresse : ", ifelse(is.na(secheresse), "n.d.", fmt(secheresse, 1)), " / 5"),
+            hoverinfo = "text") |>
+      layout(xaxis = list(title = "Sites géolocalisés"), yaxis = list(title = ""), showlegend = FALSE,
+             margin = list(l = 10, r = 10, t = 10))
   })
 
   # ---------- Saisons

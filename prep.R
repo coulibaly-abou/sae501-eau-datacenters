@@ -205,11 +205,11 @@ cat_aq <- function(cat) factor(lab_aq[ifelse(cat < 0, 6, cat + 1)], levels = lab
 # --- 8.1 Stress régional (WRI Aqueduct 4.0, provinces) x sites OpenStreetMap (20/09/2026)
 prov <- fread("donnees_brutes/base_provinces.csv", na.strings = "", encoding = "UTF-8") |> as_tibble() |>
   transmute(gid_1, region = name_1, iso3 = gid_0, bws_cat = aq_bws_baseline_cat,
-            bws_2030 = aq_bws_bau_2030_score, bws_2050 = aq_bws_bau_2050_score)
+            bws_2030 = aq_bws_bau_2030_score, bws_2050 = aq_bws_bau_2050_score, secheresse = aq_drr_baseline_score)
 osm <- fread("donnees_brutes/osm_datacenters_gid1.csv", na.strings = "", encoding = "UTF-8") |> as_tibble() |>
   transmute(lat, lon, iso3, gid_1 = gid_1_gadm, nom = coalesce(name, operator, "Site sans nom"),
             operateur = operator) |>
-  left_join(prov |> select(gid_1, region, bws_cat), by = "gid_1") |>
+  left_join(prov |> select(gid_1, region, bws_cat, bws_2030, bws_2050, secheresse), by = "gid_1") |>
   mutate(stress_region = cat_aq(bws_cat),
          pays = coalesce(countrycode(iso3, "iso3c", "country.name.fr", custom_match = c(XKX = "Kosovo")), iso3))
 
@@ -223,9 +223,12 @@ echelles <- bind_rows(
   osm |> filter(!is.na(stress_pays), !is.na(stress_region)) |> count(classe = stress_region) |> mutate(echelle = "Région du site")) |>
   group_by(echelle) |> mutate(part = 100 * n / sum(n)) |> ungroup()
 
+score_cat <- function(x) ifelse(is.na(x), NA, ifelse(x < 0, -1, pmin(4, floor(x))))
+osm <- osm |> mutate(stress_2030 = cat_aq(score_cat(bws_2030)), stress_2050 = cat_aq(score_cat(bws_2050)))
 regions <- osm |> filter(!is.na(region)) |>
   group_by(iso3, pays, gid_1, region, stress_region) |>
-  summarise(sites = n(), lat = mean(lat), lon = mean(lon), .groups = "drop")
+  summarise(sites = n(), lat = mean(lat), lon = mean(lon), stress_2030 = first(stress_2030), stress_2050 = first(stress_2050),
+            secheresse = first(secheresse), .groups = "drop")
 
 # Noms de régions doublement encodés dans le fichier source (ex. « ÃŽle-de-France ») : réparation
 fix_enc <- function(x) { y <- iconv(x, "UTF-8", "CP1252"); Encoding(y) <- "UTF-8"
@@ -234,7 +237,7 @@ osm <- osm |> mutate(region = fix_enc(region))
 regions <- regions |> mutate(region = fix_enc(region))
 
 # Rapport 1 : stress futur de la région des sites (WRI Aqueduct, scénario tendanciel « business as usual »)
-futur_sites <- osm |> left_join(prov |> select(gid_1, bws_2030, bws_2050), by = "gid_1") |>
+futur_sites <- osm |>
   summarise(`Aujourd'hui` = 100 * mean(bws_cat >= 3, na.rm = TRUE),
             `2030` = 100 * mean(bws_2030 >= 3, na.rm = TRUE),
             `2050` = 100 * mean(bws_2050 >= 3, na.rm = TRUE)) |>
@@ -350,7 +353,7 @@ saveRDS(list(
   part_ia = c(monde = part_ia_2024, fr = part_ia_fr, hausse = part_ia_hausse),
   conso_hab = conso_hab, classes = classes, acp_var = acp_var, acp_eig = acp_eig,
   hist = hist, fr_arcep = fr_arcep, prev_fr = prev_fr,
-  osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region),
+  osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region, stress_2030, stress_2050),
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
   refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites
