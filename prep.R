@@ -233,6 +233,14 @@ fix_enc <- function(x) { y <- iconv(x, "UTF-8", "CP1252"); Encoding(y) <- "UTF-8
 osm <- osm |> mutate(region = fix_enc(region))
 regions <- regions |> mutate(region = fix_enc(region))
 
+# Rapport 1 : stress futur de la région des sites (WRI Aqueduct, scénario tendanciel « business as usual »)
+futur_sites <- osm |> left_join(prov |> select(gid_1, bws_2030, bws_2050), by = "gid_1") |>
+  summarise(`Aujourd'hui` = 100 * mean(bws_cat >= 3, na.rm = TRUE),
+            `2030` = 100 * mean(bws_2030 >= 3, na.rm = TRUE),
+            `2050` = 100 * mean(bws_2050 >= 3, na.rm = TRUE)) |>
+  pivot_longer(everything(), names_to = "horizon", values_to = "part")
+print(futur_sites)
+
 # --- 8.2 Arbitrages : eau des DC face à l'eau des ménages (AQUASTAT, dernière année <= 2017)
 secteurs <- fread("donnees_brutes/aquastat_sectoriel_mon_extrait.csv") |> as_tibble() |>
   filter(grepl("as %", Variable)) |>
@@ -345,7 +353,7 @@ saveRDS(list(
   osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region),
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
-  refs_fr = refs_fr, backtest = backtest
+  refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites
 ), "app/app_data.rds")
 cat("Sites OSM :", nrow(osm), "| % en région stress élevé/extrême :",
     round(100 * mean(osm$bws_cat >= 3, na.rm = TRUE), 1), "\n")

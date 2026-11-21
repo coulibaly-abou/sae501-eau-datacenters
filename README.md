@@ -17,18 +17,20 @@ Application interactive tirée du Rapport 2. Elle reprend les mêmes calculs et 
 | `app/app.R` | Application Shiny (bslib + plotly) |
 | `deploy.R` | Mise en ligne sur shinyapps.io |
 
-## Onglets (version 2, 20/11/2026, après les remarques du jury)
+## Onglets
 
-Chaque graphique a un encadré « Comment lire » et « À retenir », pensé pour des élus et le grand public.
+Tableau de bord tiré des rapports 1 et 2. Chaque graphique répond à une question et donne une phrase à retenir ; l'aide de lecture apparaît au survol de l'icône ⓘ.
 
-1. **L'essentiel** : 5 messages clés avec leurs dates.
-2. **Carte du monde** : carte cliquable (7 indicateurs) et fiche par pays, avec des équivalents du quotidien (piscines, habitants, foyers, km en voiture).
-3. **Dans les régions** : les sites OpenStreetMap colorés selon le stress hydrique de leur région (WRI Aqueduct). Le même indicateur donne 10 % des sites en stress élevé à l'échelle du pays, mais 27 % à l'échelle de la région.
-4. **Au fil de l'année** : pluie et température mois par mois (normales 1991-2020), mois chauds et secs.
-5. **Arbitrages** : l'eau des data centers face à l'eau des habitants, les pays à surveiller, et les mesures réelles de Google par site (2025).
-6. **Hier et demain** : 2015-2022, puis les scénarios de l'AIE jusqu'en 2035.
-7. **Profils de pays** : ACP et CAH en 4 familles, avec une carte.
-8. **Données et méthode** : tableau téléchargeable, méthode, sources et dates.
+1. **Accueil** : titre, équipe, 4 chiffres clés.
+2. **Carte** : carte du monde cliquable ; un clic sur un pays zoome sur tous ses data centers et affiche sa fiche.
+3. **Régions** : chaque data center coloré selon le manque d'eau de sa région (WRI Aqueduct).
+4. **Saisons** : pluie et température mois par mois ; mois à la fois chauds et secs.
+5. **Usages** : sur 10 000 litres prélevés, la part de l'agriculture, de l'industrie, des habitants et des data centers ; pays à surveiller ; mesures réelles des sites Google.
+6. **Demain** : scénarios de l'AIE jusqu'en 2035, pays les plus exposés, prévision pour la France.
+7. **Méthode** : estimation en 5 étapes, choix du modèle de prévision, profils de pays (ACP + CAH).
+8. **Sources** : tableau par pays téléchargeable, sources, dates et limites.
+
+Le pays choisi reste le même dans les onglets Carte, Régions et Saisons.
 
 ## Lancer en local
 
