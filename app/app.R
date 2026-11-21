@@ -20,7 +20,7 @@ wue <- d$wue
 sf::sf_use_s2(FALSE)
 CENTRES <- {
   pt <- suppressWarnings(sf::st_coordinates(sf::st_point_on_surface(d$monde)))
-  base <- tibble(iso3 = d$monde$iso3, lon = pt[, 1], lat = pt[, 2])
+  base <- tibble(iso3 = d$monde$iso3, lon = pt[, 1], lat = pt[, 2]) |> distinct(iso3, .keep_all = TRUE)
   med <- d$osm |> group_by(iso3) |> summarise(lon_s = median(lon), lat_s = median(lat), n = n(), .groups = "drop")
   base |> left_join(med, by = "iso3") |> transmute(iso3, lon = ifelse(!is.na(n) & n >= 3, lon_s, lon), lat = ifelse(!is.na(n) & n >= 3, lat_s, lat))
 }
@@ -152,6 +152,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .comparaison table{font-size:.82rem;}
     .sep-vert{width:1px;height:28px;background:#cfd8dc;}
     .parcours .shiny-input-container{margin-bottom:0 !important;width:auto !important;}
+    .curseur-mois .irs-grid, .curseur-mois .irs-min, .curseur-mois .irs-max, .curseur-mois .irs-single{display:none;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
     body.sur-accueil .bslib-sidebar-layout > .sidebar,
     body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
@@ -286,15 +287,34 @@ ui <- page_navbar(
     layout_columns(col_widths = c(7, 5),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
-          span(class = "titre-bloc", "L'été : plus chaud, souvent plus sec"),
+          span(class = "titre-bloc", "L'effet ciseaux : besoin de froid en hausse, pluie en baisse"),
           div(class = "d-flex align-items-center gap-2",
-            tooltip(bs_icon("info-circle", class = "aide"), "Barres = pluie du mois, courbe = température (normales 1991-2020). En orange : les mois plus chauds ET plus secs que la moyenne, quand les data centers refroidissent le plus."),
+            tooltip(bs_icon("info-circle", class = "aide"),
+              "Barres bleues : pluie moyenne du mois (normales 1991-2020, Banque mondiale CCKP). Courbe rouge : besoin de refroidissement, mesuré en degrés-jours au-dessus de 18 °C (indicateur standard de climatisation), calculé sur la température moyenne du mois. En orange : mois à la fois plus chauds et plus secs que la moyenne."),
             selectInput("pays_clim", NULL, width = "210px", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)], "FRA"))),
-        plotlyOutput("clim", height = "380px"),
+        uiOutput("clim_chiffres"),
+        plotlyOutput("clim", height = "330px"),
         card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("clim_retenir", inline = TRUE))),
-      bloc("Combien de mois chauds et secs ?", "carte_mois",
-           "Plus la couleur est foncée, plus le pays a de mois où chaleur et manque de pluie se cumulent.",
-           "Une moyenne annuelle cache ces pics d'été.", "380px", leafletOutput))
+      card(full_screen = TRUE,
+        card_header(class = "d-flex justify-content-between align-items-center",
+          span(class = "titre-bloc", "La tension voyage avec les saisons"),
+          tooltip(bs_icon("info-circle", class = "aide"),
+            "Pour le mois choisi, chaque pays est comparé à sa propre moyenne de l'année : plus chaud ? plus sec ? Appuyez sur ▶ pour faire défiler les mois.")),
+        div(class = "px-3 pt-2 curseur-mois",
+          sliderInput("mois_carte", NULL, min = 1, max = 12, value = 7, step = 1, ticks = FALSE, width = "100%",
+                      animate = animationOptions(interval = 1600, loop = TRUE))),
+        div(class = "px-3 text-center fw-bold", textOutput("mois_nom", inline = TRUE)),
+        leafletOutput("carte_mois", height = "380px"),
+        card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("mois_retenir", inline = TRUE)))
+    ),
+    card(full_screen = TRUE,
+      card_header(class = "d-flex justify-content-between align-items-center",
+        span(class = "titre-bloc", "Calendrier de la tension : les 20 pays qui ont le plus de data centers"),
+        tooltip(bs_icon("info-circle", class = "aide"),
+          "Pays classés du nord au sud. Rouge : mois chaud et sec ; orange clair : chaud ; jaune pâle : sec ; bleu : ni l'un ni l'autre (par rapport à la moyenne du pays).")),
+      plotlyOutput("calendrier", height = "520px"),
+      card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
+        "Au nord, la tension tombe surtout de mai à septembre ; au sud (Brésil, Afrique du Sud, Australie), plutôt de septembre à novembre, avant la saison des pluies. Une moyenne annuelle cache ces pics."))
   ),
 
   # ---- Usages de l'eau (arbitrages)
@@ -711,35 +731,85 @@ server <- function(input, output, session) {
              margin = list(l = 10, r = 10, t = 10))
   })
 
-  # ---------- Saisons
+  # ---------- Saisons : effet ciseaux, carte mois par mois, calendrier
+  etat_lab <- c("Chaud et sec", "Chaud", "Sec", "Ni chaud ni sec")
+  etat_col <- c("Chaud et sec" = "#d7301f", "Chaud" = "#fdae6b", "Sec" = "#fee8a8", "Ni chaud ni sec" = "#c6dbef")
+  CLIM <- d$climat |> group_by(iso3) |>
+    mutate(chaud = tas > mean(tas), sec = pr < mean(pr),
+           etat = factor(ifelse(chaud & sec, etat_lab[1], ifelse(chaud, etat_lab[2], ifelse(sec, etat_lab[3], etat_lab[4]))), etat_lab),
+           dj = pmax(0, tas - 18) * c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[mois],      # degrés-jours de refroidissement
+           tension = as.numeric(scale(tas)) - as.numeric(scale(pr))) |> ungroup()
+  mois_long <- c("Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre")
+
+  output$clim_chiffres <- renderUI({
+    c <- CLIM |> filter(iso3 == input$pays_clim)
+    if (nrow(c) == 0) return(NULL)
+    pire <- c |> slice_max(tension, n = 1, with_ties = FALSE)
+    card_body(class = "pb-0", div(class = "chiffres-fiche",
+      div(div(class = "n", sum(c$sensible)), "mois chauds et secs"),
+      div(div(class = "n", mois_long[pire$mois]), "mois le plus tendu"),
+      div(div(class = "n", paste0("×", fmt(max(c$pr) / max(min(c$pr), 1), 1))), "pluie : mois humide / mois sec")))
+  })
   output$clim <- renderPlotly({
-    c <- d$climat |> filter(iso3 == input$pays_clim) |> arrange(mois) |> mutate(m = mois_fr[mois])
+    c <- CLIM |> filter(iso3 == input$pays_clim) |> arrange(mois)
     if (nrow(c) == 0) return(plotly_empty())
     sh <- lapply(c$mois[c$sensible], function(i) list(type = "rect", xref = "x", yref = "paper", x0 = i - 0.5, x1 = i + 0.5,
-                                                       y0 = 0, y1 = 1, fillcolor = "#f0ad4e", opacity = 0.25, line = list(width = 0), layer = "below"))
+                                                       y0 = 0, y1 = 1, fillcolor = "#f0ad4e", opacity = 0.22, line = list(width = 0), layer = "below"))
     plot_ly(c, x = ~mois) |>
-      add_bars(y = ~pr, name = "Pluie (mm)", marker = list(color = "#6baed6"), hovertext = ~paste0(m, " : ", fmt(pr, 0), " mm"), hoverinfo = "text") |>
-      add_lines(y = ~tas, name = "Température (°C)", yaxis = "y2", line = list(color = "#d62728", width = 3),
-                hovertext = ~paste0(m, " : ", fmt(tas, 1), " °C"), hoverinfo = "text") |>
+      add_bars(y = ~pr, name = "Pluie (mm)", marker = list(color = "#6baed6"),
+               hovertext = ~paste0(mois_long[mois], " : ", fmt(pr, 0), " mm de pluie"), hoverinfo = "text") |>
+      add_lines(y = ~dj, name = "Besoin de refroidissement (degrés-jours > 18 °C)", yaxis = "y2", line = list(color = "#d62728", width = 3.5),
+                hovertext = ~paste0(mois_long[mois], " : ", fmt(dj, 0), " degrés-jours (", fmt(tas, 1), " °C en moyenne)"), hoverinfo = "text") |>
       layout(shapes = sh, legend = LEG, margin = list(r = 60), xaxis = list(title = "", tickvals = 1:12, ticktext = mois_fr),
              yaxis = list(title = "Pluie (mm)", rangemode = "tozero"),
-             yaxis2 = list(title = "°C", overlaying = "y", side = "right", showgrid = FALSE))
+             yaxis2 = list(title = "Degrés-jours", overlaying = "y", side = "right", showgrid = FALSE, rangemode = "tozero"))
   })
   output$clim_retenir <- renderText({
-    c <- d$climat |> filter(iso3 == input$pays_clim); n <- d$pays$country[d$pays$iso3 == input$pays_clim]
-    if (!any(c$sensible)) return(paste0(n, " : aucun mois à la fois plus chaud et plus sec."))
-    paste0(n, " : mois chauds et secs = ", paste(mois_fr[c$mois[c$sensible]], collapse = ", "), ".")
+    c <- CLIM |> filter(iso3 == input$pays_clim); n <- d$pays$country[d$pays$iso3 == input$pays_clim]
+    if (nrow(c) == 0) return("Pas de données climatiques pour ce pays.")
+    if (max(c$dj) < 1) return(paste0(n, " : il ne fait jamais plus de 18 °C en moyenne mensuelle ; les data centers peuvent se refroidir surtout avec l'air extérieur."))
+    m <- c |> slice_max(dj, n = 1, with_ties = FALSE)
+    paste0(n, " : en ", tolower(mois_long[m$mois]), ", le besoin de refroidissement est au plus haut (", fmt(m$dj, 0), " degrés-jours)",
+           if (m$pr < mean(c$pr)) paste0(" alors qu'il ne tombe que ", fmt(m$pr, 0), " mm de pluie, contre ", fmt(mean(c$pr), 0), " mm en moyenne : c'est l'effet ciseaux.")
+           else paste0(" mais il pleut plus que la moyenne (", fmt(m$pr, 0), " mm contre ", fmt(mean(c$pr), 0), " mm) : pas d'effet ciseaux ce mois-là."))
   })
+
+  output$mois_nom <- renderText(mois_long[input$mois_carte])
   output$carte_mois <- renderLeaflet({
-    nm <- d$climat |> group_by(iso3) |> summarise(n = sum(sensible))
-    m <- d$monde |> left_join(nm, by = "iso3") |> left_join(d$pays |> select(iso3, country), by = "iso3")
-    pal <- colorBin("YlOrBr", domain = 0:6, bins = c(-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 6.5), na.color = "#e8e8e8")
-    leaflet(m) |> addProviderTiles(providers$Esri.WorldGrayCanvas) |>
-      addPolygons(fillColor = pal(m$n), fillOpacity = 0.85, color = "white", weight = 0.5,
-                  label = paste0(coalesce(m$country, m$iso3), " : ", m$n, " mois chauds et secs")) |>
-      addLegend("bottomleft", pal = pal, values = m$n, title = "Mois chauds et secs", na.label = "pas de donnée",
-                labFormat = function(type, cuts, p) c("0", "1", "2", "3", "4", "5 ou +")) |>
+    cm <- CLIM |> filter(mois == input$mois_carte)
+    m <- d$monde |> left_join(cm |> select(iso3, etat, tas, pr), by = "iso3") |> left_join(d$pays |> select(iso3, country, n_dc), by = "iso3")
+    remp <- ifelse(is.na(m$etat), "#eeeeee", etat_col[as.character(m$etat)])
+    lab <- paste0("<b>", coalesce(m$country, m$iso3), "</b><br>", ifelse(is.na(m$etat), "pas de donnée", as.character(m$etat)),
+                  ifelse(is.na(m$tas), "", paste0("<br>", fmt(m$tas, 1), " °C · ", fmt(m$pr, 0), " mm")),
+                  ifelse(is.na(m$n_dc), "", paste0("<br>", m$n_dc, " data centers"))) |> lapply(htmltools::HTML)
+    leaflet(options = leafletOptions(minZoom = 1, zoomSnap = 0.25)) |> addProviderTiles(providers$Esri.WorldGrayCanvas) |>
+      addPolygons(data = m, fillColor = remp, fillOpacity = 0.9, color = "white", weight = 0.5, label = lab) |>
+      addLegend("bottomleft", colors = unname(etat_col), labels = names(etat_col), opacity = 0.9, title = "Ce mois-ci, le pays est…") |>
       setView(10, 25, 1)
+  })
+  output$mois_retenir <- renderText({
+    cm <- CLIM |> filter(mois == input$mois_carte) |> inner_join(d$pays |> select(iso3, n_dc), by = "iso3")
+    p <- 100 * sum(cm$n_dc[cm$etat == etat_lab[1]]) / sum(cm$n_dc)
+    paste0(mois_long[input$mois_carte], " : ", fmt(p, 0), " % des data centers sont dans un pays chaud et sec ce mois-ci.")
+  })
+
+  output$calendrier <- renderPlotly({
+    top <- d$pays |> slice_max(n_dc, n = 20, with_ties = FALSE) |> select(iso3, country, n_dc) |>
+      inner_join(CENTRES |> select(iso3, lat), by = "iso3") |> arrange(lat)
+    cal <- CLIM |> filter(iso3 %in% top$iso3) |> left_join(top, by = "iso3") |>
+      mutate(code = as.integer(etat), pays = factor(paste0(country, " (", n_dc, ")"), paste0(top$country, " (", top$n_dc, ")")))
+    z <- tapply(cal$code, list(cal$pays, cal$mois), function(x) x[1])
+    txt <- tapply(paste0("<b>", cal$country, " — ", mois_long[cal$mois], "</b><br>", cal$etat, "<br>", fmt(cal$tas, 1), " °C · ", fmt(cal$pr, 0), " mm"),
+                  list(cal$pays, cal$mois), function(x) x[1])
+    cs <- list(c(0, etat_col[[1]]), c(0.25, etat_col[[1]]), c(0.25, etat_col[[2]]), c(0.5, etat_col[[2]]),
+               c(0.5, etat_col[[3]]), c(0.75, etat_col[[3]]), c(0.75, etat_col[[4]]), c(1, etat_col[[4]]))
+    plot_ly(x = mois_fr, y = rownames(z), z = z, type = "heatmap", colorscale = cs, zmin = 0.5, zmax = 4.5, showscale = FALSE,
+            text = txt, hoverinfo = "text", xgap = 2, ygap = 2) |>
+      layout(xaxis = list(title = "", side = "top"), yaxis = list(title = "", tickfont = list(size = 11)),
+             margin = list(l = 10, r = 10, t = 30, b = 40),
+             annotations = list(list(x = 1.0, y = -0.08, xref = "paper", yref = "paper", xanchor = "right", showarrow = FALSE,
+                                     text = "<span style='color:#d7301f'>■</span> chaud et sec   <span style='color:#fdae6b'>■</span> chaud   <span style='color:#e6c86e'>■</span> sec   <span style='color:#9ecae1'>■</span> ni l'un ni l'autre",
+                                     font = list(size = 12))))
   })
 
   # ---------- Usages : sur 10 000 litres
