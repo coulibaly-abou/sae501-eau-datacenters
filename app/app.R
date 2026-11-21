@@ -107,6 +107,10 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .fiche dt{font-weight:500;color:#666;font-size:.9rem;} .fiche dd{font-size:1.1rem;margin-bottom:.5rem;}
     .fiche .equiv{font-size:.85rem;color:#777;}
     .barre-carte .shiny-input-container{margin-bottom:0 !important;}
+    /* Accueil : pas de panneau « Hypothèses » ni de flèche */
+    body.sur-accueil .bslib-sidebar-layout > .sidebar,
+    body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
+    body.sur-accueil .bslib-sidebar-layout{grid-template-columns:0 1fr !important;}
     /* Accueil */
     .accueil{margin:-1.5rem -1.5rem 0 -1.5rem;}
     .bande-logos{display:flex;justify-content:space-between;align-items:center;padding:14px 48px;background:#fff;}
@@ -144,7 +148,7 @@ ui <- page_navbar(
               div(div(class = "marque-titre", "L'eau des data centers"),
                   div(class = "marque-sous", "SAÉ 5.EMS.01 · IUT de Carcassonne"))),
   window_title = "L'eau des data centers - SAÉ 5.EMS.01",
-  sidebar = sidebar(id = "sb", width = 260, open = "desktop",
+  sidebar = sidebar(id = "sb", width = 260, open = "closed",
     h6(bs_icon("sliders"), " Hypothèses"),
     radioButtons("horizon", "Année", c("2024" = 2024, "2030" = 2030, "2035" = 2035), 2024, inline = TRUE),
     conditionalPanel("input.horizon != '2024'",
@@ -154,6 +158,11 @@ ui <- page_navbar(
 
   # ---- Accueil
   nav_panel("Accueil", value = "Accueil", icon = bs_icon("house"),
+    tags$script(HTML("
+      document.body.classList.add('sur-accueil');
+      $(document).on('shown.bs.tab', 'a[data-bs-toggle]', function(e){
+        document.body.classList.toggle('sur-accueil', $(e.target).attr('data-value') === 'Accueil');
+      });")),
     div(class = "accueil",
       div(class = "bande-logos",
         tags$img(src = "logo_iut.png", alt = "IUT Perpignan Carcassonne Narbonne"),
@@ -177,7 +186,6 @@ ui <- page_navbar(
             div(class = "legende", tags$b("Ashburn, Virginie"), br(), "La plus forte concentration de data centers au monde")),
         div(class = "photo", style = "background-image:url('photo_council_bluffs.jpg');",
             div(class = "legende", tags$b("Council Bluffs, Iowa"), br(), "Le site Google qui consomme le plus d'eau : 5 millions de m³ en 2025"))),
-      div(class = "credits", "Photos Wikimedia Commons : BalticServers.com (CC BY-SA 3.0), Theodore Christopher (CC0), Chad Davis (CC BY 2.0).")
     )
   ),
 
@@ -315,7 +323,8 @@ ui <- page_navbar(
             tags$tr(tags$td("Stress hydrique par région"), tags$td("WRI Aqueduct 4.0"), tags$td("1979-2019")),
             tags$tr(tags$td("Pluie et température"), tags$td("Banque mondiale CCKP"), tags$td("1991-2020")),
             tags$tr(tags$td("Eau par site Google"), tags$td("Google, rapport 2026"), tags$td("2025")),
-            tags$tr(tags$td("Data centers en France"), tags$td("Arcep, ADEME, RTE"), tags$td("2021-2030")))),
+            tags$tr(tags$td("Data centers en France"), tags$td("Arcep, ADEME, RTE"), tags$td("2021-2030")),
+            tags$tr(tags$td("Photos de l'accueil"), tags$td("Wikimedia Commons : BalticServers.com (CC BY-SA 3.0), Theodore Christopher (CC0), Chad Davis (CC BY 2.0)"), tags$td("")))),
         h6("Limites"),
         tags$ul(class = "small",
           tags$li("L'électricité est répartie selon le nombre de sites, pas leur taille."),
