@@ -45,6 +45,48 @@ grand <- function(x) ifelse(is.na(x), "n.d.", ifelse(x >= 1e6, paste(fmt(x / 1e6
 LEG <- list(orientation = "h", x = 0, y = 1.12)
 avec_unite <- function(x, u) paste0(grand(x), ifelse(!is.na(x) & x >= 1e6, " de ", " "), u)
 
+# Test de McNemar : les MÊMES sites classés « stress élevé » selon l'échelle du pays puis celle de la région (WRI Aqueduct)
+MCN <- local({
+  o <- d$osm |> left_join(d$pays |> select(iso3, stress_pays_aq), by = "iso3") |> filter(!is.na(stress_region), !is.na(stress_pays_aq))
+  s <- function(x) factor(as.character(x) %in% d$lab_aq[4:5], c(FALSE, TRUE))
+  t <- table(pays = s(o$stress_pays_aq), region = s(o$stress_region))
+  test <- mcnemar.test(t)
+  list(n = nrow(o), p_pays = 100 * mean(s(o$stress_pays_aq) == "TRUE"), p_reg = 100 * mean(s(o$stress_region) == "TRUE"),
+       caches = t["FALSE", "TRUE"], inverse = t["TRUE", "FALSE"], deux = t["TRUE", "TRUE"], aucun = t["FALSE", "FALSE"], chi2 = unname(test$statistic),
+       p_txt = if (test$p.value < 0.001) "p < 0,001" else paste("p =", fmt(test$p.value, 3)))
+})
+# Radar de la fiche pays : chaleur (degrés-jours > 18 °C sur l'année) et pluie annuelle, normales 1991-2020
+CLIM_AN <- d$climat |> group_by(iso3) |> summarise(dj = sum(pmax(tas - 18, 0) * 30.4), pluie = sum(pr), .groups = "drop")
+
+# Évolution : croissance annuelle moyenne et test de tendance de Mann-Kendall (tau de Kendall année / valeur)
+tcam <- function(v, a) { ok <- !is.na(v); v <- v[ok]; a <- a[ok]
+  if (length(v) < 2) NA_real_ else 100 * ((v[length(v)] / v[1])^(1 / (a[length(a)] - a[1])) - 1) }
+mk <- function(v, a) { ok <- !is.na(v); if (sum(ok) < 4) return(NULL)
+  if (length(unique(v[ok])) == 1) return(list(p.value = 1, estimate = 0, constante = TRUE))   # même valeur reprise chaque année
+  suppressWarnings(cor.test(a[ok], v[ok], method = "kendall")) }
+EVO <- local({
+  dc <- d$aie |> filter(cas == "Historique") |> arrange(annee)
+  list(dc = dc, t_dc = tcam(dc$twh, dc$annee))
+})
+# Séries 2015-2022 : 30 pays les plus équipés (total) ou un pays (panel du Rapport 2)
+SERIE_DEB <- 2015; SERIE_FIN <- 2022
+serie_evo <- function(iso) {
+  if (iso == "TOP30") return(d$hist |> filter(year >= SERIE_DEB) |> select(year, eau, elec))
+  d$hist_pays |> filter(iso3 == iso, year >= SERIE_DEB, year <= SERIE_FIN) |> arrange(year) |> select(year, eau, elec)
+}
+CHOIX_EVO <- local({
+  ok <- d$hist_pays |> filter(year >= SERIE_DEB, year <= SERIE_FIN) |> group_by(iso3) |>
+    summarise(n_eau = sum(!is.na(eau)), n_elec = sum(!is.na(elec)), .groups = "drop") |>
+    filter(n_eau >= 4, n_elec >= 4) |> inner_join(d$pays |> select(iso3, country, n_dc), by = "iso3") |> arrange(country)
+  c("Les 30 pays les plus équipés" = "TOP30", setNames(ok$iso3, ok$country))
+})
+p_txt <- function(p) if (p < 0.001) "p < 0,001" else paste("p =", fmt(p, 2))
+
+MCN_AIDE <- paste0("Test de McNemar sur ", fmt(MCN$n, 0), " sites (données appariées : chaque site est classé deux fois). ",
+                   fmt(MCN$p_pays, 0), " % en stress élevé à l'échelle du pays, ", fmt(MCN$p_reg, 0), " % à l'échelle de la région. ",
+                   fmt(MCN$caches, 0), " sites sont en région sèche alors que leur pays ne l'est pas (", fmt(MCN$inverse, 0),
+                   " dans l'autre sens). Khi² = ", fmt(MCN$chi2, 0), ", ", MCN$p_txt, " : l'écart n'est pas dû au hasard.")
+
 calculer <- function(w, scenario, horizon) {
   p <- d$pays
   if (horizon <= 2024) p$f <- 1 else {
@@ -64,6 +106,10 @@ calculer <- function(w, scenario, horizon) {
               stress_h = stress0 * (1 + (eau - e0 * w) / (prelev0 * 1e3)),
               cat0 = categoriser(stress0), cat_h = categoriser(stress_h))
 }
+
+# Accueil : une réponse = une phrase-titre, une explication, une preuve éventuelle, un lien vers l'onglet
+reponse <- function(titre, texte, preuve, lien, id)
+  div(class = "reponse", h3(titre), p(texte), preuve, actionLink(id, lien, class = "voir"))
 
 # Un bloc = un titre (question), le graphique, une phrase à retenir. L'aide est dans l'icône (i).
 bloc <- function(titre, sortie, aide, retenir, h = "380px", plot = plotlyOutput)
@@ -90,7 +136,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .marque{display:flex;align-items:center;gap:.6rem;line-height:1.1;}
     .marque .goutte{font-size:1.7rem;color:#7fd3f7;}
     .marque-titre{font-weight:800;font-size:1.25rem;color:#fff;letter-spacing:.01em;}
-    .marque-sous{font-size:.72rem;color:rgba(255,255,255,.72);letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
+    .marque-sous{font-size:.78rem;color:rgba(255,255,255,.72);margin-top:2px;}
     .navbar .navbar-nav{margin-left:auto !important;margin-right:auto !important;gap:.4rem;}
     .navbar .nav-link{color:rgba(255,255,255,.88) !important;font-weight:500;font-size:1rem;padding:.5rem 1.05rem !important;
                       border-radius:999px;border:0 !important;transition:background .15s,color .15s;}
@@ -168,7 +214,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .accueil{margin:-1.5rem -1.5rem 0 -1.5rem;}
     .bande-logos{display:flex;justify-content:space-between;align-items:center;padding:14px 48px;background:#fff;}
     .bande-logos img{height:62px;width:auto;}
-    .bande-logos span{font-size:.8rem;letter-spacing:.12em;text-transform:uppercase;color:#7a8a94;}
+    .bande-logos span{font-size:.9rem;color:#7a8a94;}
     .hero{position:relative;min-height:62vh;display:flex;align-items:center;justify-content:center;text-align:center;
           background-color:#123f52;}
     .hero-contenu{max-width:900px;padding:70px 24px;color:#fff;}
@@ -191,13 +237,34 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .photo .legende{position:absolute;left:0;right:0;bottom:0;padding:22px 24px;color:#fff;font-size:.95rem;
                     background:linear-gradient(0deg,rgba(0,0,0,.75),rgba(0,0,0,0));}
     .photo .legende b{font-size:1.15rem;}
+    /* Méthode : Évolution et test */
+    .evo-ligne{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #eef2f4;}
+    .evo-ligne:last-of-type{border-bottom:0;}
+    .evo-lib{font-size:.95rem;color:#333;} .evo-tend{font-size:.8rem;color:#7a8a94;margin-top:2px;}
+    .evo-val{font-size:1.5rem;font-weight:800;color:#123f52;white-space:nowrap;}
+    .mcn{display:grid;grid-template-columns:120px 1fr 1fr;gap:8px;padding:20px 16px;align-items:stretch;}
+    .mcn-col{text-align:center;font-weight:600;color:#444;font-size:.9rem;align-self:end;}
+    .mcn-lig{font-weight:600;color:#444;font-size:.9rem;display:flex;align-items:center;}
+    .mcn-c{background:#f4f6f8;border-radius:8px;padding:22px 12px;text-align:center;color:#666;font-size:.9rem;display:flex;flex-direction:column;justify-content:center;}
+    .mcn-c b{display:block;font-size:1.8rem;color:#5b6b75;} .mcn-pct{font-size:.78rem;opacity:.75;margin-top:2px;}
+    .mcn-c.change{background:#fdf1e7;color:#8a4b14;} .mcn-c.change b{display:block;font-size:1.8rem;color:#d35400;}
+    .mcn-c.fort{background:#fbe3e1;color:#8e2b20;} .mcn-c.fort b{color:#c0392b;font-size:2.2rem;}
+    .reponses{padding:16px 48px 56px;background:#fff;}
+    .reponses h2{text-align:center;font-size:1.6rem;font-weight:700;color:#123f52;margin:0 0 32px;}
+    .reponses-grille{display:grid;grid-template-columns:repeat(3,1fr);max-width:1200px;margin:0 auto;}
+    .reponse{display:flex;flex-direction:column;align-items:flex-start;padding:0 32px;border-left:1px solid #e3e9ee;}
+    .reponse:first-child{border-left:0;}
+    .reponse h3{font-size:1.2rem;font-weight:700;color:#123f52;margin:0 0 10px;}
+    .reponse p{color:#4a5a63;font-size:1rem;line-height:1.55;flex:1;margin-bottom:10px;}
+    .reponse .preuve{font-size:.85rem;color:#7a8a94;margin-bottom:10px;cursor:help;border-bottom:1px dotted #9aa6ad;}
+    .reponse .voir{color:#1f6f8b;text-decoration:underline;text-underline-offset:3px;}
     .credits{text-align:center;font-size:.72rem;color:#9aa6ad;padding:0 0 24px;background:#fff;}
-    @media (max-width:900px){.hero h1{font-size:2.6rem;} .photos{grid-template-columns:1fr;padding:0 16px 30px;}
+    @media (max-width:900px){.hero h1{font-size:2.6rem;} .reponses{padding:8px 16px 32px;} .reponses-grille{grid-template-columns:1fr;} .reponse{border-left:0;padding:0 0 28px;} .photos{grid-template-columns:1fr;padding:0 16px 30px;}
       .bande-logos{padding:10px 16px;} .bande-logos span{display:none;} .chiffre{border-left:0;margin-bottom:24px;} .fleche{transform:rotate(90deg);}}")
 
 ui <- page_navbar(
   id = "nav", fillable = FALSE, theme = theme,
-  title = div(class = "marque", bs_icon("droplet-fill", class = "goutte"),
+  title = div(class = "marque",
               div(div(class = "marque-titre", "L'eau des data centers"),
                   div(class = "marque-sous", "SAÉ 5.EMS.01 · IUT de Carcassonne"))),
   window_title = "L'eau des data centers - SAÉ 5.EMS.01",
@@ -211,7 +278,7 @@ ui <- page_navbar(
     div(class = "small text-muted", "▶ fait défiler les années. Entre 2024, 2030 et 2035 (scénarios AIE), les valeurs sont interpolées.")),
 
   # ---- Accueil
-  nav_panel("Accueil", value = "Accueil", icon = bs_icon("house"),
+  nav_panel("Accueil", value = "Accueil",
     tags$script(HTML("
       document.body.classList.add('sur-accueil');
       $(document).on('shown.bs.tab', 'a[data-bs-toggle]', function(e){
@@ -224,10 +291,9 @@ ui <- page_navbar(
         tags$img(src = "logo_upvd.png", alt = "Université de Perpignan Via Domitia")),
       div(class = "hero", style = "background:linear-gradient(180deg,rgba(8,30,44,.50) 0%,rgba(8,30,44,.80) 100%),url('photo_serveurs.jpg') center/cover no-repeat;",
         div(class = "hero-contenu",
-          div(class = "hero-sur", "Étude statistique"),
           h1("L'eau des data centers"),
           p(class = "hero-question", "Les ressources en eau suffiront-elles, aujourd'hui et en 2035 ?"),
-          actionButton("entrer", "Découvrir l'étude", icon = bs_icon("arrow-right"), class = "btn-hero"),
+          actionButton("entrer", "Découvrir l'étude", class = "btn-hero"),
           div(class = "hero-noms", "Ayi AMAVIGAN · Ada GADJI · Aboubakar COULIBALY", br(),
               span("Professeure : Mme Viguier-Pla · IUT de Carcassonne")))),
       div(class = "chiffres",
@@ -235,6 +301,20 @@ ui <- page_navbar(
         div(class = "chiffre", div(class = "nb", "336 M m³"), div(class = "lib", "d'eau utilisée en 2024")),
         div(class = "chiffre", div(class = "nb", "< 0,1 %"), div(class = "lib", "de l'eau d'un pays, 9 fois sur 10")),
         div(class = "chiffre", div(class = "nb", "27 %"), div(class = "lib", "des sites en région qui manque d'eau"))),
+      div(class = "reponses",
+        h2("Alors, l'eau suffira-t-elle ?"),
+        div(class = "reponses-grille",
+          reponse("Oui, à l'échelle d'un pays.",
+                  "Les data centers utilisent moins de 0,1 % de l'eau prélevée dans 9 pays sur 10. L'agriculture en consomme près de 8 000 fois plus.",
+                  NULL, "Voir les usages de l'eau", "rep_usages"),
+          reponse("Pas forcément là où ils sont installés.",
+                  paste0(fmt(MCN$p_reg, 0), " % des sites se trouvent dans une région qui manque d'eau, alors qu'on n'en compte que ",
+                         fmt(MCN$p_pays, 0), " % en regardant le pays entier."),
+                  tooltip(span(class = "preuve", paste0("Écart significatif (test de McNemar, ", MCN$p_txt, ")")), MCN_AIDE),
+                  "Voir les régions", "rep_regions"),
+          reponse("Et demain, la pression va monter.",
+                  "D'ici 2035, leur consommation d'électricité serait multipliée par 1,7 à 4,1. L'été est déjà la période la plus tendue.",
+                  NULL, "Voir les projections", "rep_demain"))),
       div(class = "photos",
         div(class = "photo", style = "background-image:url('photo_ashburn.jpg');",
             div(class = "legende", tags$b("Ashburn, Virginie"), br(), "La plus forte concentration de data centers au monde")),
@@ -244,7 +324,7 @@ ui <- page_navbar(
   ),
 
   # ---- Carte du monde
-  nav_panel("Carte", icon = bs_icon("globe-europe-africa"),
+  nav_panel("Carte",
     layout_columns(col_widths = c(8, 4),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
@@ -269,14 +349,14 @@ ui <- page_navbar(
   ),
 
   # ---- Régions
-  nav_panel("Régions", icon = bs_icon("geo-alt"),
+  nav_panel("Régions",
     layout_columns(col_widths = c(8, 4),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
           span(class = "titre-bloc", "Où se concentrent les data centers, et où l'eau manque-t-elle ?"),
           div(class = "d-flex align-items-center gap-2",
             tooltip(bs_icon("info-circle", class = "aide"),
-              "Densité : estimation par noyau gaussien (méthode non paramétrique) sur les sites OpenStreetMap (20/09/2026). Les contours entourent les zones qui regroupent les 50 %, 25 % et 10 % de sites les plus concentrés. Couleur des points : manque d'eau de la région (WRI Aqueduct ; 2030 et 2050 : scénario tendanciel)."),
+              "Densité : estimation par noyau gaussien (méthode non paramétrique) sur les sites OpenStreetMap (20/09/2026). Les contours entourent les zones qui regroupent les 50 %, 25 % et 10 % de sites les plus concentrés. Couleur des points : manque d'eau de la région (WRI Aqueduct ; 2030 et 2050 : scénario tendanciel). ", MCN_AIDE),
             selectInput("pays_reg", NULL, width = "210px",
                         c("Monde entier" = "MONDE", setNames(sort(unique(d$osm$iso3)), d$osm$pays[match(sort(unique(d$osm$iso3)), d$osm$iso3)])), "MONDE"))),
         div(class = "parcours d-flex flex-wrap align-items-center column-gap-4 px-3 pt-3",
@@ -292,7 +372,7 @@ ui <- page_navbar(
   ),
 
   # ---- Saisons
-  nav_panel("Saisons", icon = bs_icon("sun"),
+  nav_panel("Saisons",
     layout_columns(col_widths = c(7, 5),
       card(full_screen = TRUE,
         card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
@@ -327,7 +407,7 @@ ui <- page_navbar(
   ),
 
   # ---- Usages de l'eau (arbitrages)
-  nav_panel("Usages", icon = bs_icon("signpost-split"),
+  nav_panel("Usages",
     card(card_header(class = "d-flex justify-content-between align-items-center",
            span(class = "titre-bloc", "Sur 10 000 litres prélevés"),
            tooltip(bs_icon("info-circle", class = "aide"), "132 pays. Prélèvements par usage : FAO AQUASTAT. Data centers : estimation du Rapport 2 (hypothèses à gauche).")),
@@ -353,7 +433,7 @@ ui <- page_navbar(
   ),
 
   # ---- Demain
-  nav_panel("Demain", icon = bs_icon("graph-up-arrow"),
+  nav_panel("Demain",
     layout_columns(col_widths = c(6, 6),
       bloc("×1,7 à ×4,1 d'ici 2035", "traj",
            "Électricité mondiale des data centers : mesures 2020-2024 (trait plein) puis les 4 scénarios de l'Agence internationale de l'énergie (Energy and AI, 2025).",
@@ -367,7 +447,7 @@ ui <- page_navbar(
   ),
 
   # ---- Méthode
-  nav_panel("Méthode", icon = bs_icon("calculator"),
+  nav_panel("Méthode",
     navset_card_pill(
       nav_panel("Estimation",
         p(class = "text-muted mb-2", "Estimation en 5 étapes (exemple : la France)."),
@@ -414,11 +494,38 @@ ui <- page_navbar(
                  "L'eau des data centers pèse surtout dans les petits pays riches."))),
         bloc("Carte des 4 familles", "carte_classes",
              "Pays colorés selon leur famille. Gris : pays non classés (moins de 10 data centers).",
-             "Les grands pays équipés ne sont pas ceux où l'eau des data centers pèse le plus.", "380px", leafletOutput)))
+             "Les grands pays équipés ne sont pas ceux où l'eau des data centers pèse le plus.", "380px", leafletOutput)),
+      nav_panel("Évolution",
+        div(class = "parcours d-flex align-items-center gap-2 mb-3",
+          span(class = "small text-muted", "Voir l'évolution de :"),
+          selectInput("pays_evo", NULL, width = "260px", CHOIX_EVO, "TOP30")),
+        layout_columns(col_widths = c(7, 5),
+          bloc(textOutput("evo_titre", inline = TRUE), "evo_courbes",
+               "Base 100 en 2020 (ou l'année disponible la plus proche). Data centers : électricité mondiale mesurée par l'AIE (2020, 2023, 2024) ; elle sert de repère, même quand un pays est choisi. Électricité produite et eau prélevée : panel annuel du Rapport 2 (FAO AQUASTAT pour l'eau), 2015-2022. Pour un pays, l'eau n'est pas mesurée tous les ans : seuls les points disponibles sont tracés.",
+               textOutput("evo_retenir", inline = TRUE), "380px"),
+          card(card_header(class = "d-flex justify-content-between align-items-center",
+                 span(class = "titre-bloc", "Croissance par an, et tendance"),
+                 tooltip(bs_icon("info-circle", class = "aide"),
+                   "Taux de croissance annuel moyen : data centers 2020-2024, électricité et eau entre la première et la dernière année disponibles (2015-2022). Test de Mann-Kendall : la série monte-t-elle (ou baisse-t-elle) régulièrement, au-delà du hasard ? Il repose sur le tau de Kendall entre l'année et la valeur. Seuil : 5 %. Il faut au moins 4 années mesurées.")),
+               card_body(uiOutput("evo_chiffres")),
+               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
+                 "Pas encore d'effet visible sur l'eau d'un pays entier.")))),
+      nav_panel("Pays ou région ?",
+        layout_columns(col_widths = c(7, 5),
+          bloc(paste(fmt(MCN$caches, 0), "data centers cachés par la moyenne du pays"), "mcn_cases", MCN_AIDE,
+               "Regarder le pays entier sous-estime le risque.", "330px", uiOutput),
+          card(card_header(class = "d-flex justify-content-between align-items-center",
+                 span(class = "titre-bloc", "Le test de McNemar"),
+                 tooltip(bs_icon("info-circle", class = "aide"),
+                   "Les deux pourcentages portent sur les mêmes sites : on ne peut pas les comparer comme deux échantillons indépendants. Le test de McNemar ne regarde que les sites qui changent de case (904 et 97) : si l'échelle ne changeait rien, ils seraient à peu près aussi nombreux dans les deux sens.")),
+               card_body(uiOutput("mcn_chiffres")),
+               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
+                 "L'écart n'est pas dû au hasard."))))
+    )
   ),
 
   # ---- Sources
-  nav_panel("Sources", icon = bs_icon("journal-text"),
+  nav_panel("Sources",
     navset_card_pill(
       nav_panel("Données par pays",
         div(class = "d-flex justify-content-end mb-2", downloadButton("dl", "Télécharger (CSV)", class = "btn-sm")),
@@ -451,6 +558,78 @@ ui <- page_navbar(
 # --------------------------------------------------------------- Serveur -----
 server <- function(input, output, session) {
   observeEvent(input$entrer, nav_select("nav", "Carte"))
+  observeEvent(input$rep_usages, nav_select("nav", "Usages"))
+  observeEvent(input$rep_regions, nav_select("nav", "Régions"))
+  observeEvent(input$rep_demain, nav_select("nav", "Demain"))
+
+  # ---- Méthode > Évolution
+  evo <- reactive({
+    iso <- input$pays_evo %||% "TOP30"; s <- serie_evo(iso)
+    nom <- if (iso == "TOP30") "des 30 pays" else paste0("(", names(CHOIX_EVO)[CHOIX_EVO == iso], ")")
+    list(s = s, nom = nom, t_elec = tcam(s$elec, s$year), t_eau = tcam(s$eau, s$year),
+         mk_elec = mk(s$elec, s$year), mk_eau = mk(s$eau, s$year))
+  })
+  output$evo_titre <- renderText({
+    e <- evo(); r <- EVO$t_dc / e$t_elec
+    if (is.na(r) || e$t_elec <= 0.1) "Les data centers grandissent bien plus vite que l'électricité du pays"
+    else paste0("Les data centers grandissent ", fmt(r, 0), " fois plus vite que l'électricité")
+  })
+  output$evo_retenir <- renderText({
+    t <- evo()$mk_eau
+    if (is.null(t)) "Trop peu d'années mesurées pour l'eau."
+    else if (t$p.value >= 0.05) "L'eau prélevée, elle, ne bouge pas."
+    else if (t$estimate < 0) "L'eau prélevée, elle, baisse."
+    else "L'eau prélevée augmente aussi : à surveiller."
+  })
+  output$evo_courbes <- renderPlotly({
+    e <- evo(); s <- e$s; dc <- EVO$dc
+    b <- function(v, a) { ok <- !is.na(v); if (!any(ok)) return(v); 100 * v / v[ok][which.min(abs(a[ok] - 2020))] }
+    se <- s |> filter(!is.na(eau)); sl <- s |> filter(!is.na(elec))
+    plot_ly() |>
+      add_trace(x = dc$annee, y = b(dc$twh, dc$annee), name = "Électricité des data centers (monde)", type = "scatter",
+                line = list(color = "#d35400", width = 3), mode = "lines+markers", marker = list(size = 8, color = "#d35400"),
+                hovertemplate = "%{x} : %{y:.0f}<extra>Data centers</extra>") |>
+      add_trace(x = sl$year, y = b(sl$elec, sl$year), name = paste("Électricité", e$nom), type = "scatter", mode = "lines+markers",
+                line = list(color = "#1f6f8b", width = 2.5), marker = list(size = 5, color = "#1f6f8b"),
+                hovertemplate = "%{x} : %{y:.0f}<extra>Électricité</extra>") |>
+      add_trace(x = se$year, y = b(se$eau, se$year), name = paste("Eau prélevée", e$nom), type = "scatter", mode = "lines+markers",
+                line = list(color = "#2e86c1", width = 2.5, dash = "dot"), marker = list(size = 5, color = "#2e86c1"),
+                hovertemplate = "%{x} : %{y:.0f}<extra>Eau prélevée</extra>") |>
+      layout(xaxis = list(title = "", dtick = 1, range = c(2014.5, 2024.5)), yaxis = list(title = "Indice (2020 = 100)"),
+             legend = list(orientation = "h", x = 0, y = -0.12), hovermode = "x unified",
+             shapes = list(list(type = "line", x0 = 2015, x1 = 2024, y0 = 100, y1 = 100, line = list(color = "#bbb", width = 1))))
+  })
+  output$evo_chiffres <- renderUI({
+    e <- evo()
+    ligne <- function(lib, taux, coul, tend = NULL)
+      div(class = "evo-ligne", div(class = "evo-lib", lib, if (!is.null(tend)) div(class = "evo-tend", tend)),
+          div(class = "evo-val", style = paste0("color:", coul),
+              if (is.na(taux)) "n.d." else paste0(ifelse(taux >= 0.05, "+", ""), fmt(taux, 1), " %")))
+    tend <- function(t) if (is.null(t)) "trop peu d'années pour le test" else
+      if (isTRUE(t$constante)) "même valeur chaque année (chiffre officiel non actualisé)" else
+      paste0(if (t$p.value < 0.05) (if (t$estimate > 0) "hausse nette" else "baisse nette") else "pas de tendance",
+             " (Mann-Kendall, ", p_txt(t$p.value), ")")
+    div(div(class = "small text-muted mb-2", "Croissance moyenne par an"),
+        ligne("Électricité des data centers (monde)", EVO$t_dc, "#d35400"),
+        ligne(paste("Électricité", e$nom), e$t_elec, "#1f6f8b", tend(e$mk_elec)),
+        ligne(paste("Eau prélevée", e$nom), e$t_eau, "#2e86c1", tend(e$mk_eau)))
+  })
+
+  # ---- Méthode > Pays ou région ?
+  output$mcn_cases <- renderUI({
+    n <- MCN$n
+    case <- function(v, lib, cl = "") div(class = paste("mcn-c", cl), tags$b(fmt(v, 0)), lib, div(class = "mcn-pct", paste0(fmt(100 * v / n, 0), " % des sites")))
+    div(class = "mcn",
+      div(), div(class = "mcn-col", "Région sèche"), div(class = "mcn-col", "Région non sèche"),
+      div(class = "mcn-lig", "Pays sec"), case(MCN$deux, "secs des deux points de vue"), case(MCN$inverse, "secs seulement vu du pays", "change"),
+      div(class = "mcn-lig", "Pays non sec"), case(MCN$caches, "secs seulement vu de la région", "change fort"), case(MCN$aucun, "secs d'aucun point de vue"))
+  })
+  output$mcn_chiffres <- renderUI(div(
+    div(class = "evo-ligne", div(class = "evo-lib", "Stress élevé, vu du pays"), div(class = "evo-val", paste0(fmt(MCN$p_pays, 0), " %"))),
+    div(class = "evo-ligne", div(class = "evo-lib", "Stress élevé, vu de la région"), div(class = "evo-val", style = "color:#c0392b", paste0(fmt(MCN$p_reg, 0), " %"))),
+    div(class = "evo-ligne", div(class = "evo-lib", "Khi² de McNemar (1 ddl)"), div(class = "evo-val", fmt(MCN$chi2, 0))),
+    div(class = "evo-ligne", div(class = "evo-lib", "Probabilité que ce soit le hasard"), div(class = "evo-val", MCN$p_txt)),
+    div(class = "small text-muted mt-2", paste(fmt(MCN$n, 0), "sites, chacun classé deux fois (WRI Aqueduct)."))))
   observeEvent(input$nav, toggle_sidebar("sb", open = input$nav != "Accueil"), ignoreInit = FALSE)
 
   w  <- reactive(wue[[input$coef]])
@@ -623,26 +802,42 @@ server <- function(input, output, session) {
         p(class = "small text-muted", bs_icon("hand-index"), " Cliquez sur un pays pour zoomer.")))
     }
     x <- r |> filter(iso3 == input$pays_sel)
-    comp <- NULL
-    if (!is.null(input$pays_comp) && input$pays_comp != "" && input$pays_comp != input$pays_sel) {
-      y <- r |> filter(iso3 == input$pays_comp)
-      lig <- function(t, a, b) tags$tr(tags$td(t), tags$td(a), tags$td(b))
-      comp <- div(class = "comparaison", div(class = "fiche-sous", "Comparaison"),
-        tags$table(class = "table table-sm mb-0",
-          tags$thead(tags$tr(tags$th(""), tags$th(x$country), tags$th(y$country))),
-          tags$tbody(
-            lig("Data centers", x$n_dc, y$n_dc),
-            lig("Eau (Mm³)", fmt(x$eau, 1), fmt(y$eau, 1)),
-            lig("Part de l'eau", pct(x$part), pct(y$part)),
-            lig("Manque d'eau", paste0(fmt(x$stress0, 0), " %"), paste0(fmt(y$stress0, 0), " %")),
-            lig("Sites en région sèche", pct(x$pct_sites_region_stress), pct(y$pct_sites_region_stress)))))
-    }
     card_body(class = "fiche", h4(x$country), p(class = "text-muted small mb-2", quand()),
       div(class = "chiffres-fiche",
         div(div(class = "n", x$n_dc), "data centers"),
         div(div(class = "n", fmt(x$eau, 1)), "millions de m³"),
         div(div(class = "n", grand(x$eau * 1e6 / HAB_M3)), "habitants (équivalent)")),
-      jauge(x$part), litres_pays(x), comp)
+      jauge(x$part),
+      div(class = "d-flex justify-content-between align-items-center",
+        div(class = "fiche-sous", "Profil face à l'eau"),
+        tooltip(bs_icon("info-circle", class = "aide"),
+          "Chaque axe classe le pays parmi tous les pays de l'étude : 0 = le moins concerné, 100 = le plus concerné. Plus la forme est grande, plus le pays est exposé. Choisissez un pays dans « Comparer avec… » pour superposer son profil. Valeurs exactes au survol.")),
+      plotlyOutput("radar", height = "290px"),
+      litres_pays(x))
+  })
+  output$radar <- renderPlotly({
+    req(input$pays_sel != "MONDE")
+    r <- res() |> left_join(CLIM_AN, by = "iso3")
+    rg <- function(v) { k <- rank(v, na.last = "keep", ties.method = "min"); 100 * (k - 1) / (sum(!is.na(v)) - 1) }
+    axes <- tibble(
+      lib = c("Data centers", "Poids sur l'eau", "Manque d'eau (pays)", "Sites en région sèche", "Chaleur", "Peu de pluie"),
+      var = list(r$n_dc, r$part, r$stress0, r$pct_sites_region_stress, r$dj, -r$pluie),
+      txt = list(fmt(r$n_dc, 0), pct(r$part), paste0(fmt(r$stress0, 0), " %"), pct(r$pct_sites_region_stress),
+                 paste(fmt(r$dj, 0), "degrés-jours"), paste(fmt(r$pluie, 0), "mm/an")))
+    trace <- function(p, iso, coul) {
+      i <- match(iso, r$iso3)
+      sc <- vapply(axes$var, function(v) rg(v)[i], numeric(1)); tx <- vapply(axes$txt, function(v) v[i], character(1))
+      sc[is.na(sc)] <- 0; ferme <- c(seq_along(sc), 1)
+      add_trace(p, type = "scatterpolar", r = sc[ferme], theta = axes$lib[ferme], name = r$country[i], fill = "toself",
+                fillcolor = paste0(coul, "33"), line = list(color = coul, width = 2), marker = list(color = coul, size = 5),
+                text = paste0(tx[ferme], " (rang ", fmt(sc[ferme], 0), "/100)"), hovertemplate = "%{theta} : %{text}<extra>%{fullData.name}</extra>")
+    }
+    p <- plot_ly() |> trace(input$pays_sel, "#1f6f8b")
+    if (!is.null(input$pays_comp) && input$pays_comp != "" && input$pays_comp != input$pays_sel) p <- trace(p, input$pays_comp, "#d35400")
+    p |> layout(polar = list(radialaxis = list(range = c(0, 100), tickvals = c(50, 100), tickfont = list(size = 9, color = "#999"), gridcolor = "#e3e9ee"),
+                             angularaxis = list(tickfont = list(size = 10), gridcolor = "#e3e9ee")),
+                showlegend = TRUE, legend = list(orientation = "h", x = 0.5, xanchor = "center", y = -0.08),
+                margin = list(l = 50, r = 50, t = 20, b = 20))
   })
   output$fiche_clim <- renderPlotly({
     req(input$pays_sel != "MONDE")

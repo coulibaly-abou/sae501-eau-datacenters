@@ -166,6 +166,9 @@ hist <- panel |>
             n_eau = sum(!is.na(prelev_vol)), n_elec = sum(!is.na(elec_generation_twh)), .groups = "drop") |>
   filter(n_eau == max(n_eau), n_elec == max(n_elec)) |>
   mutate(eau_ind = 100 * eau / first(eau), elec_ind = 100 * elec / first(elec))
+# Séries par pays (onglet Méthode > Évolution) : électricité produite et eau prélevée
+hist_pays <- panel |> filter(year >= 2010, year <= 2022) |>
+  transmute(iso3, year, eau = prelev_vol, elec = elec_generation_twh)
 
 # --- 7. France -------------------------------------------------------------------
 fr_arcep <- tibble(annee = 2021:2024,
@@ -376,7 +379,7 @@ saveRDS(list(
   pays = pays, scen = scen, scen_zone = scen_zone, aie = aie, wue = wue,
   part_ia = c(monde = part_ia_2024, fr = part_ia_fr, hausse = part_ia_hausse),
   conso_hab = conso_hab, classes = classes, acp_var = acp_var, acp_eig = acp_eig,
-  hist = hist, fr_arcep = fr_arcep, prev_fr = prev_fr,
+  hist = hist, hist_pays = hist_pays, fr_arcep = fr_arcep, prev_fr = prev_fr,
   osm = osm |> select(lat, lon, iso3, pays, nom, region, stress_region, stress_2030, stress_2050),
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
