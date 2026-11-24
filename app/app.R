@@ -45,6 +45,7 @@ CHOIX_PAYS <- c("Monde entier" = "MONDE", setNames(d$pays$iso3, d$pays$country)[
 # ------------------------------------------------------------- Constantes ----
 PISCINE <- 2500          # m3, bassin olympique
 KM_KG <- 0.2             # ordre de grandeur : kg de CO2 par km en voiture thermique
+FOYER_MWH <- 4.5         # MWh d'électricité par foyer et par an (ordre de grandeur, France)
 HAB_M3 <- d$conso_hab    # 65 m3 par habitant et par an (ratio Arcep)
 mois_fr <- c("janv.", "févr.", "mars", "avril", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.")
 cat_lab <- c("aucun", "faible", "moyen", "élevé", "critique")
@@ -66,7 +67,8 @@ MCN <- local({
   s <- function(x) factor(as.character(x) %in% d$lab_aq[4:5], c(FALSE, TRUE))
   t <- table(pays = s(o$stress_pays_aq), region = s(o$stress_region))
   test <- mcnemar.test(t)
-  list(n = nrow(o), p_pays = 100 * mean(s(o$stress_pays_aq) == "TRUE"), p_reg = 100 * mean(s(o$stress_region) == "TRUE"),
+  top <- o |> count(region, sort = TRUE) |> slice(1)
+  list(n = nrow(o), top_region = top$region, top_pct = 100 * top$n / nrow(o), p_pays = 100 * mean(s(o$stress_pays_aq) == "TRUE"), p_reg = 100 * mean(s(o$stress_region) == "TRUE"),
        caches = t["FALSE", "TRUE"], inverse = t["TRUE", "FALSE"], deux = t["TRUE", "TRUE"], aucun = t["FALSE", "FALSE"], chi2 = unname(test$statistic),
        p_txt = if (test$p.value < 0.001) "p < 0,001" else paste("p =", fmt(test$p.value, 3)))
 })
@@ -100,7 +102,35 @@ p_txt <- function(p) if (p < 0.001) "p < 0,001" else paste("p =", fmt(p, 2))
 MCN_AIDE <- paste0("Test de McNemar sur ", fmt(MCN$n, 0), " sites (données appariées : chaque site est classé deux fois). ",
                    fmt(MCN$p_pays, 0), " % en stress élevé à l'échelle du pays, ", fmt(MCN$p_reg, 0), " % à l'échelle de la région. ",
                    fmt(MCN$caches, 0), " sites sont en région sèche alors que leur pays ne l'est pas (", fmt(MCN$inverse, 0),
-                   " dans l'autre sens). Khi² = ", fmt(MCN$chi2, 0), ", ", MCN$p_txt, " : l'écart n'est pas dû au hasard.")
+                   " dans l'autre sens). Khi² = ", fmt(MCN$chi2, 0), ", ", MCN$p_txt, ". « Région sèche » : stress hydrique Aqueduct ≥ 40 %. ",
+                   "Attention : les sites ne sont pas indépendants, ils sont groupés en grappes (", fmt(MCN$top_pct, 0), " % en ", MCN$top_region,
+                   ") ; la p-value est donc optimiste et le résultat principal est descriptif. Avec une seule ligne par région (",
+                   fmt(d$mcn_regions$n, 0), " régions) : ", fmt(d$mcn_regions$p_reg, 0), " % de régions sèches contre ", fmt(d$mcn_regions$p_pays, 0),
+                   " % vu du pays (", p_txt(d$mcn_regions$p), ").")
+
+# ------------------------------------------------ Chiffres clés (calculés une seule fois) -----
+# Toute valeur affichée dans l'interface vient d'ici ou d'un calcul du serveur, jamais d'un nombre tapé à la main.
+ARCEP_TWH <- 2.7   # Arcep 2024 : électricité des 23 opérateurs suivis (base des coefficients 0,21 et 2,41 L/kWh)
+K <- local({
+  p <- d$pays; w0 <- wue[["central"]]
+  part <- 100 * p$e0 * w0 / (p$prelev0 * 1e3)
+  s <- p |> filter(!is.na(prelev0), !is.na(pct_agri), !is.na(pct_indus), !is.na(pct_menages))
+  agri <- sum(s$prelev0 * s$pct_agri) / sum(s$prelev0 * (s$pct_agri + s$pct_indus + s$pct_menages)) * 1e4
+  dc <- 1e4 * sum(s$e0 * w0) / (sum(s$prelev0) * 1e3)
+  f35 <- d$scen |> filter(horizon == 2035)
+  fr <- p |> filter(iso3 == "FRA"); g1 <- d$google |> slice_max(eau_m3, n = 1)
+  list(n_sites = sum(p$n_dc), n_pays = nrow(p), twh = d$twh_monde,
+       eau_c = d$twh_monde * w0, eau_b = d$twh_monde * wue[["bas"]], eau_h = d$twh_monde * wue[["haut"]],
+       pct_pays_01 = 100 * mean(part < 0.1, na.rm = TRUE), n_pays_part = sum(!is.na(part)),
+       agri_sur_dc = agri / dc, dc_litres = dc,
+       f35_min = min(f35$f_monde), f35_max = max(f35$f_monde),
+       indirecte = 100 * (1 - wue[["bas"]] / wue[["haut"]]),
+       fr_e0 = fr$e0, fr_eau = fr$e0 * w0, google_site = g1$site, google_m3 = g1$eau_m3,
+       gwh_eur = d$gwh_site_zone$gwh_site[d$gwh_site_zone$zone == "EUR"],
+       gwh_rdm = d$gwh_site_zone$gwh_site[d$gwh_site_zone$zone == "RDM"],
+       cales = d$pays$country[d$pays$cale_aie])
+})
+sur_10 <- function(x) paste0(fmt(x / 10, 0), " pays sur 10")
 
 calculer <- function(w, scenario, horizon) {
   p <- d$pays
@@ -120,6 +150,16 @@ calculer <- function(w, scenario, horizon) {
               ratio_menages = 100 * eau / eau_menages,
               stress_h = stress0 * (1 + (eau - e0 * w) / (prelev0 * 1e3)),
               cat0 = categoriser(stress0), cat_h = categoriser(stress_h))
+}
+
+# Évolution 2024 -> 2035 d'un pays : MÊME calcul dans Usages et Demain.
+# Volume = eau consommée par les data centers ; part = volume / eau prélevée du pays.
+# Dénominateur : prévision du modèle de dérive pour la France, constant (moyenne 2015-2022) pour les autres pays.
+evol_pays <- function(iso, w, scen) {
+  a <- calculer(w, scen, 2024) |> filter(iso3 == iso); b <- calculer(w, scen, 2035) |> filter(iso3 == iso)
+  prel35 <- if (iso == "FRA") d$prev_fr$prev$prevision[d$prev_fr$prev$annee == 2035] else a$prelev0
+  list(f_vol = b$eau / a$eau, eau24 = a$eau, eau35 = b$eau, part24 = a$part,
+       part35 = 100 * b$eau / (prel35 * 1e3), denominateur = if (iso == "FRA") "prévision des prélèvements (dérive)" else "prélèvements constants")
 }
 
 # Accueil : une réponse = une phrase-titre, une explication, une preuve éventuelle, un lien vers l'onglet
@@ -191,6 +231,8 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .etape{flex:1 1 140px;border:2px solid #1f6f8b;border-radius:12px;padding:12px;background:#fff;text-align:center;}
     .etape .num{display:inline-block;width:30px;height:30px;border-radius:50%;background:#1f6f8b;color:#fff;font-weight:700;line-height:30px;}
     .etape .val{font-size:1.2rem;font-weight:700;color:#d35400;margin-top:4px;}
+    .etape-det{font-weight:400;font-size:.75rem;color:#6b7b85;margin-top:3px;line-height:1.3;}
+    .note-limite{font-size:.82rem;color:#6b7b85;background:#f6f8fa;border-left:3px solid #c9d3da;padding:6px 10px;margin:6px 0 10px;border-radius:4px;}
     .fleche{display:flex;align-items:center;justify-content:center;font-size:1.6rem;color:#1f6f8b;flex:0 0 24px;}
     .fiche dt{font-weight:500;color:#666;font-size:.9rem;} .fiche dd{font-size:1.1rem;margin-bottom:.5rem;}
     .fiche .equiv{font-size:.85rem;color:#777;}
@@ -232,6 +274,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .famille{padding:8px 12px;margin-bottom:10px;background:#fafbfc;border-radius:6px;}
     .famille-nom{font-weight:700;} .famille-n{font-weight:400;color:#888;font-size:.85rem;margin-left:6px;}
     .famille-val{font-size:.85rem;color:#444;margin-top:2px;} .famille-ex{font-size:.8rem;color:#888;font-style:italic;}
+    .famille-vt{font-size:.78rem;color:#1f6f8b;margin-top:3px;}
     /* Accueil : pas de panneau « Hypothèses » ni de flèche */
     body.sur-accueil .bslib-sidebar-layout > .sidebar,
     body.sur-accueil .bslib-sidebar-layout > .collapse-toggle{display:none !important;}
@@ -257,6 +300,7 @@ theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_
     .chiffre:first-child{border-left:0;}
     .chiffre .nb{font-size:2.6rem;font-weight:800;color:#1f6f8b;line-height:1;}
     .chiffre .lib{margin-top:10px;color:#5b6b75;font-size:.95rem;}
+    .chiffre .base{margin-top:6px;color:#9aa6ad;font-size:.78rem;line-height:1.35;}
     .photos{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 48px 40px;background:#fff;}
     .photo{height:300px;border-radius:16px;background-size:cover;background-position:center;position:relative;overflow:hidden;
            box-shadow:0 8px 30px rgba(0,0,0,.12);}
@@ -300,7 +344,9 @@ ui <- page_navbar(
                 animate = animationOptions(interval = 2200, loop = FALSE)),
     conditionalPanel("input.horizon > 2024",
       radioButtons("scen", "Croissance des data centers", c("Lente" = "bas", "Centrale" = "central", "Rapide" = "haut"), "central")),
-    radioButtons("coef", "Eau utilisée par kWh", c("Basse : 0,21 L" = "bas", "Moyenne : 0,81 L" = "central", "Haute : 2,41 L" = "haut"), "central"),
+    radioButtons("coef", "Eau par kWh", setNames(c("bas", "central", "haut"),
+                 c(paste0("Sur place, Arcep : ", fmt(wue[["bas"]], 2), " L"), paste0("Sur place, centrale : ", fmt(wue[["central"]], 2), " L"),
+                   paste0("Avec l'électricité : ", fmt(wue[["haut"]], 2), " L"))), "central"),
     div(class = "small text-muted", "▶ fait défiler les années. Entre 2024, 2030 et 2035 (scénarios AIE), les valeurs sont interpolées.")),
 
   # ---- Accueil
@@ -323,29 +369,39 @@ ui <- page_navbar(
           div(class = "hero-noms", "Ayi AMAVIGAN · Ada GADJI · Aboubakar COULIBALY", br(),
               span("Professeure : Mme Viguier-Pla · IUT de Carcassonne")))),
       div(class = "chiffres",
-        div(class = "chiffre", div(class = "nb", "6 239"), div(class = "lib", "data centers dans 135 pays")),
-        div(class = "chiffre", div(class = "nb", "336 M m³"), div(class = "lib", "d'eau utilisée en 2024")),
-        div(class = "chiffre", div(class = "nb", "< 0,1 %"), div(class = "lib", "de l'eau d'un pays, 9 fois sur 10")),
-        div(class = "chiffre", div(class = "nb", "27 %"), div(class = "lib", "des sites en région qui manque d'eau"))),
+        div(class = "chiffre", div(class = "nb", fmt(K$n_sites, 0)),
+            div(class = "lib", paste("data centers dans", K$n_pays, "pays")), div(class = "base", "inventaire par pays, 2024")),
+        div(class = "chiffre", div(class = "nb", paste(fmt(K$eau_c, 0), "M m³")),
+            div(class = "lib", "d'eau consommée sur place (refroidissement), estimation centrale 2024"),
+            div(class = "base", paste0(fmt(K$eau_b, 0), " à ", fmt(K$eau_h, 0), " M m³ selon le coefficient ; ",
+                                       fmt(K$eau_h, 0), " M m³ en ajoutant l'eau des centrales électriques"))),
+        div(class = "chiffre", div(class = "nb", "< 0,1 %"),
+            div(class = "lib", paste0("de l'eau prélevée du pays, dans ", sur_10(K$pct_pays_01))),
+            div(class = "base", "comparé à l'eau prélevée, ce qui minore la part")),
+        div(class = "chiffre", div(class = "nb", paste0(fmt(MCN$p_reg, 0), " %")),
+            div(class = "lib", "des sites en région qui manque d'eau"),
+            div(class = "base", paste0(fmt(MCN$n, 0), " sites géolocalisés (OpenStreetMap) ; stress ≥ 40 %")))),
       div(class = "reponses",
         h2("Alors, l'eau suffira-t-elle ?"),
         div(class = "reponses-grille",
-          reponse("Oui, à l'échelle d'un pays.",
-                  "Les data centers utilisent moins de 0,1 % de l'eau prélevée dans 9 pays sur 10. L'agriculture en consomme près de 8 000 fois plus.",
+          reponse("Oui, avec nos hypothèses, à l'échelle d'un pays.",
+                  paste0("Les data centers consomment moins de 0,1 % de l'eau prélevée dans ", sur_10(K$pct_pays_01),
+                         ". Dans le monde, l'agriculture prélève environ ", grand(round(K$agri_sur_dc, -2)), " fois plus d'eau."),
                   NULL, "Voir les usages de l'eau", "rep_usages"),
           reponse("Pas forcément là où ils sont installés.",
-                  paste0(fmt(MCN$p_reg, 0), " % des sites se trouvent dans une région qui manque d'eau, alors qu'on n'en compte que ",
+                  paste0(fmt(MCN$p_reg, 0), " % des sites géolocalisés se trouvent dans une région qui manque d'eau, alors qu'on n'en compte que ",
                          fmt(MCN$p_pays, 0), " % en regardant le pays entier."),
-                  tooltip(span(class = "preuve", paste0("Écart significatif (test de McNemar, ", MCN$p_txt, ")")), MCN_AIDE),
+                  tooltip(span(class = "preuve", "Écart net site par site, plus faible région par région"), MCN_AIDE),
                   "Voir les régions", "rep_regions"),
           reponse("Et demain, la pression va monter.",
-                  "D'ici 2035, leur consommation d'électricité serait multipliée par 1,7 à 4,1. L'été est déjà la période la plus tendue.",
+                  paste0("D'ici 2035, l'électricité des data centers serait multipliée par ", fmt(K$f35_min, 1), " à ", fmt(K$f35_max, 1),
+                         " dans le monde (AIE). Dans l'hémisphère nord, l'été est la période la plus tendue."),
                   NULL, "Voir les projections", "rep_demain"))),
       div(class = "photos",
         div(class = "photo", style = "background-image:url('photo_ashburn.jpg');",
             div(class = "legende", tags$b("Ashburn, Virginie"), br(), "La plus forte concentration de data centers au monde")),
         div(class = "photo", style = "background-image:url('photo_council_bluffs.jpg');",
-            div(class = "legende", tags$b("Council Bluffs, Iowa"), br(), "Le site Google qui consomme le plus d'eau : 5 millions de m³ en 2025"))),
+            div(class = "legende", tags$b("Council Bluffs, Iowa"), br(), paste0("Le site Google qui consomme le plus d'eau : ", fmt(K$google_m3 / 1e6, 1), " millions de m³ en 2025 (", fmt(K$fr_eau, 1), " pour toute la France dans notre estimation)")))),
     )
   ),
 
@@ -382,7 +438,7 @@ ui <- page_navbar(
           span(class = "titre-bloc", "Où se concentrent les data centers, et où l'eau manque-t-elle ?"),
           div(class = "d-flex align-items-center gap-2",
             tooltip(bs_icon("info-circle", class = "aide"),
-              "Densité : estimation par noyau gaussien (méthode non paramétrique) sur les sites OpenStreetMap (20/09/2026). Les contours entourent les zones qui regroupent les 50 %, 25 % et 10 % de sites les plus concentrés. Couleur des points : manque d'eau de la région (WRI Aqueduct ; 2030 et 2050 : scénario tendanciel). ", MCN_AIDE),
+              "Densité : estimation par noyau gaussien (méthode non paramétrique) sur les sites OpenStreetMap (20/09/2026). Largeur du noyau : écart-type de 0,75° (environ 80 km) pour le monde ; pour un pays, règle de référence normale divisée par 2. Les contours entourent les zones qui regroupent les 50 %, 25 % et 10 % de sites les plus concentrés. « Région sèche » : stress hydrique Aqueduct ≥ 40 % (classes Élevé et Extrêmement élevé). 2030 et 2050 : scénario « business as usual » d'Aqueduct 4.0 (SSP3 / RCP 7.0) ; l'horizon d'Aqueduct (2030, 2050) n'est pas celui de l'électricité (2035). ", MCN_AIDE),
             selectInput("pays_reg", NULL, width = "210px",
                         c("Monde entier" = "MONDE", setNames(sort(unique(d$osm$iso3)), d$osm$pays[match(sort(unique(d$osm$iso3)), d$osm$iso3)])), "MONDE"))),
         div(class = "parcours d-flex flex-wrap align-items-center column-gap-4 px-3 pt-3",
@@ -405,8 +461,9 @@ ui <- page_navbar(
           span(class = "titre-bloc", "Effet ciseaux : plus de chaleur, moins de pluie"),
           div(class = "d-flex align-items-center gap-2",
             tooltip(bs_icon("info-circle", class = "aide"),
-              "Barres bleues : pluie moyenne du mois (normales 1991-2020, Banque mondiale CCKP). Courbe rouge : besoin de refroidissement, mesuré en degrés-jours au-dessus de 18 °C (indicateur standard de climatisation), calculé sur la température moyenne du mois. En orange : mois à la fois plus chauds et plus secs que la moyenne."),
+              "Barres bleues : pluie moyenne du mois (normales 1991-2020, Banque mondiale CCKP). Courbe rouge : degrés-jours de refroidissement = (température moyenne du mois − 18 °C) × nombre de jours, si positif. En orange : mois « chauds et secs » = température au-dessus de la moyenne annuelle du pays ET pluie en dessous de la moyenne mensuelle du pays. Limite : la demande en eau du refroidissement dépend surtout de la température humide (chaleur + humidité), pas seulement de la température de l'air."),
             selectInput("pays_clim", NULL, width = "210px", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)], "FRA"))),
+        div(class = "px-3 pt-2", div(class = "note-limite", "Échelle nationale : la moyenne du pays peut masquer des régions plus chaudes ou plus sèches (nos données climatiques mensuelles ne descendent pas sous le pays). C'est la même limite que celle montrée dans l'onglet Régions.")),
         uiOutput("clim_chiffres"),
         plotlyOutput("clim", height = "330px"),
         card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("clim_retenir", inline = TRUE))),
@@ -414,7 +471,7 @@ ui <- page_navbar(
         card_header(class = "d-flex justify-content-between align-items-center",
           span(class = "titre-bloc", "La tension voyage avec les saisons"),
           tooltip(bs_icon("info-circle", class = "aide"),
-            "Pour le mois choisi, chaque pays est comparé à sa propre moyenne de l'année : plus chaud ? plus sec ? Appuyez sur ▶ pour faire défiler les mois.")),
+            "Pour le mois choisi, chaque pays est comparé à sa propre moyenne de l'année : plus chaud (température > moyenne annuelle) ? plus sec (pluie < moyenne mensuelle) ? Pays entiers : un grand pays peut cacher des régions très différentes. Appuyez sur ▶ pour faire défiler les mois.")),
         div(class = "px-3 pt-2 curseur-mois",
           sliderInput("mois_carte", NULL, min = 1, max = 12, value = 7, step = 1, ticks = FALSE, width = "100%",
                       animate = animationOptions(interval = 1600, loop = TRUE))),
@@ -426,17 +483,21 @@ ui <- page_navbar(
       card_header(class = "d-flex justify-content-between align-items-center",
         span(class = "titre-bloc", "Calendrier de la tension (20 pays les plus équipés)"),
         tooltip(bs_icon("info-circle", class = "aide"),
-          "Pays classés du nord au sud. Rouge : mois chaud et sec ; orange clair : chaud ; jaune pâle : sec ; bleu : ni l'un ni l'autre (par rapport à la moyenne du pays).")),
+          "Pays classés du nord au sud. Rouge : mois chaud et sec ; orange clair : chaud ; jaune pâle : sec ; bleu : ni l'un ni l'autre (par rapport à la moyenne du pays). Pour les très grands pays (États-Unis, Chine, Inde, Australie), la moyenne nationale mélange des climats très différents.")),
       plotlyOutput("calendrier", height = "520px"),
       card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
-        "Nord : mai à septembre. Sud : septembre à novembre."))
+        textOutput("calendrier_retenir", inline = TRUE)))
   ),
 
   # ---- Usages de l'eau (arbitrages)
   nav_panel("Usages",
-    card(card_header(class = "d-flex justify-content-between align-items-center",
-           span(class = "titre-bloc", "Sur 10 000 litres prélevés"),
-           tooltip(bs_icon("info-circle", class = "aide"), "132 pays. Prélèvements par usage : FAO AQUASTAT. Data centers : estimation du Rapport 2 (hypothèses à gauche).")),
+    card(card_header(class = "d-flex flex-wrap gap-2 justify-content-between align-items-center",
+           span(class = "titre-bloc", textOutput("litres_titre", inline = TRUE)),
+           div(class = "d-flex align-items-center gap-2",
+             tooltip(bs_icon("info-circle", class = "aide"),
+               "Répartition des prélèvements par usage : FAO AQUASTAT, dernière année connue (souvent 2017 ou avant ; l'année est indiquée sous les chiffres). Data centers : eau consommée sur place estimée pour l'année choisie à gauche (2024 par défaut). On compare une consommation à des prélèvements : la part des data centers est donc minorée."),
+             selectInput("pays_us", NULL, width = "210px",
+                         c("Monde" = "MONDE", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)][!is.na(d$pays$pct_menages[order(d$pays$country)])]), "MONDE"))),
          card_body(uiOutput("litres")),
          card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("litres_retenir", inline = TRUE))),
     layout_columns(col_widths = c(7, 5),
@@ -444,14 +505,18 @@ ui <- page_navbar(
         card_header(class = "d-flex justify-content-between align-items-center",
           span(class = "titre-bloc", "Un data center, en équivalents"),
           tooltip(bs_icon("info-circle", class = "aide"),
-            "Un an de fonctionnement. 3,77 GWh par MW installé (Commission européenne, 2024). Foyer ≈ 4,5 MWh/an ; habitant ≈ 65 m³/an (Arcep) ; voiture ≈ 0,2 kg CO₂/km.")),
+            "Un an de fonctionnement. Électricité : GWh par MW installé mesurés sur les data centers européens (Commission européenne, 2024), soit un taux de charge moyen. Eau : coefficient choisi à gauche (eau consommée sur place).")),
         div(class = "parcours d-flex flex-wrap align-items-center column-gap-4 px-3 pt-3",
           radioButtons("mw", NULL, inline = TRUE, c("1 MW" = 1, "10 MW" = 10, "100 MW" = 100), 10),
           div(class = "d-flex align-items-center gap-2", span(class = "small text-muted", "Électricité de :"),
               selectInput("mix", NULL, width = "220px", setNames(d$pays$iso3, d$pays$country)[order(d$pays$country)][!is.na(d$pays$gco2_kwh[order(d$pays$country)])], "FRA"))),
-        card_body(uiOutput("conv"))),
-      bloc("91 % de l'eau vient de l'électricité", "directe",
-           "Data centers suivis par l'Arcep (France, 2024) : 0,575 Mm³ prélevés sur place, 6,5 Mm³ en comptant la production de leur électricité.",
+        card_body(uiOutput("conv")),
+        card_footer(class = "small text-muted", uiOutput("conv_hyp", inline = TRUE))),
+      bloc(paste0("France : ", fmt(K$indirecte, 0), " % de l'eau des data centers est indirecte"), "directe",
+           paste0("Arcep 2024 : 23 opérateurs suivis, ", fmt(ARCEP_TWH, 1), " TWh (une partie seulement du parc français). ",
+                  fmt(ARCEP_TWH * wue[["bas"]], 2), " million de m³ consommés sur place (", fmt(wue[["bas"]], 2), " L/kWh) ; ",
+                  fmt(ARCEP_TWH * wue[["haut"]], 1), " millions de m³ en ajoutant l'eau utilisée pour produire leur électricité (",
+                  fmt(wue[["haut"]], 2), " L/kWh). Notre chiffre central (", fmt(wue[["central"]], 2), " L/kWh) ne compte que l'eau consommée sur place."),
            "Le levier principal : le mix électrique.", "300px")),
     bloc("Usages de l'eau, 1990-2035", "tendance",
          "Prélèvements par usage (FAO AQUASTAT) et eau des data centers estimée 2024-2035 (bande : croissance lente à rapide). Échelle logarithmique.",
@@ -461,14 +526,14 @@ ui <- page_navbar(
   # ---- Demain
   nav_panel("Demain",
     layout_columns(col_widths = c(6, 6),
-      bloc("×1,7 à ×4,1 d'ici 2035", "traj",
-           "Électricité mondiale des data centers : mesures 2020-2024 (trait plein) puis les 4 scénarios de l'Agence internationale de l'énergie (Energy and AI, 2025).",
+      bloc(paste0("×", fmt(K$f35_min, 1), " à ×", fmt(K$f35_max, 1), " d'ici 2035 (monde)"), "traj",
+           "Électricité mondiale des data centers : mesures 2020-2024 (trait plein) puis les 4 scénarios de l'Agence internationale de l'énergie (Energy and AI, 2025). Le facteur porte sur le monde ; chaque zone (États-Unis, Chine, Europe, reste du monde) a son propre facteur, plus faible en Europe.",
            "La hausse est certaine, son ampleur ne l'est pas.", "340px"),
       bloc("Les pays les plus exposés en 2035", "top10_fut",
-           "Part de l'eau du pays utilisée par les data centers en 2024, 2030 et 2035. Barre rose : écart entre croissance lente et rapide.",
+           "Part de l'eau prélevée du pays consommée par les data centers en 2024, 2030 et 2035. Dénominateur gardé constant (prélèvements moyens 2015-2022), faute de prévision pays par pays. Barre rose : écart entre croissance lente et rapide.",
            textOutput("fut_retenir", inline = TRUE), "340px")),
     bloc(textOutput("fr_titre", inline = TRUE), "fr_scen",
-         "Eau des data centers français selon la croissance (Arcep, AIE). En rouge : la part due à l'IA. Étiquette : part de l'eau prélevée en France, prévue par le modèle de dérive (voir Méthode).",
+         "Eau consommée sur place par les data centers français selon la croissance (facteur de la zone Europe, AIE). En rouge : la part due à l'IA. Étiquette : part de l'eau prélevée en France, avec au dénominateur la prévision du modèle de dérive (voir Méthode). Même calcul que dans l'onglet Usages.",
          textOutput("frscen_retenir", inline = TRUE), "330px")
   ),
 
@@ -480,54 +545,81 @@ ui <- page_navbar(
         uiOutput("etapes"),
         layout_columns(col_widths = c(6, 6), class = "mt-3",
           bloc("88 à 999 millions de m³ selon le coefficient", "coefs",
-               "Eau de tous les data centers du monde en 2024 avec chacun des 3 coefficients : 0,21 L/kWh (eau directe, Arcep), 0,81 (moyenne par type de refroidissement, Rapport 1), 2,41 (directe + indirecte, Arcep).",
+               paste0("Eau de tous les data centers du monde en 2024 (", fmt(K$twh, 0), " TWh) avec chacun des 3 coefficients : ",
+                      fmt(wue[["bas"]], 2), " L/kWh (eau consommée sur place, Arcep 2024), ", fmt(wue[["central"]], 2),
+                      " (eau consommée sur place, moyenne pondérée par type de refroidissement ; source d'origine À VÉRIFIER, citée dans notre Rapport 1), ",
+                      fmt(wue[["haut"]], 2), " (sur place + production de l'électricité, Arcep 2024). Les deux premiers mesurent la même chose ; le troisième ajoute l'eau des centrales."),
                "Principale incertitude : d'où une fourchette.", "300px"),
-          bloc("Notre répartition retrouve l'AIE", "validation",
-               "Part des data centers dans l'électricité du pays : notre modèle (bleu) et la valeur publiée par l'AIE (gris). Contrôle partiel : plusieurs pays sont calés sur l'AIE.",
-               "4,3 % contre 4 % aux États-Unis, 1,8 % contre 2 % au Japon.", "300px"))),
+          bloc("Pays calés sur l'AIE : contrôle de cohérence, pas une validation", "validation",
+               "Part des data centers dans l'électricité du pays : notre modèle (bleu) et la valeur publiée (gris). États-Unis, Chine, Irlande, Japon et Inde sont calés sur l'AIE : l'écart ne vient que du dénominateur (électricité nationale). Seul contrôle indépendant : la France, comparée au chiffre ADEME-Arcep 2020 pour tout le parc.",
+               textOutput("validation_retenir", inline = TRUE), "300px"))),
       nav_panel("Prévision",
         layout_columns(col_widths = c(7, 5),
-          bloc("Le modèle de dérive prévoit le mieux", "backtest",
-               "Apprentissage sur 2015-2019 (zone grise), test sur 2020-2022 sans connaître la réponse. Courbe noire : réalité.",
-               "Test sur 2020-2022.", "360px"),
-          bloc("Erreur : 0,75 contre 1,7 à 2,4", "mae",
-               "Erreur absolue moyenne sur 2020-2022, en milliards de m³ (naïf, ETS, ARIMA, dérive).",
-               "Modèle retenu : dérive.", "360px")),
+          bloc("Seulement 8 années : un choix de modèle fragile", "backtest",
+               paste0("Apprentissage sur ", d$prev_fr$n_train, " années (2015-2019, zone grise), test sur ", d$prev_fr$n_test,
+                      " années (2020-2022 : Covid puis sécheresse 2022) sans connaître la réponse. Courbe noire : réalité."),
+               "Trop peu de points pour départager nettement les modèles.", "360px"),
+          bloc(textOutput("mae_titre", inline = TRUE), "mae",
+               "MAE = erreur absolue moyenne ; RMSE = racine de l'erreur quadratique moyenne (pénalise les grosses erreurs), en milliards de m³. Gris : test 2020-2022. Bleu : validation croisée glissante (on refait la prévision à 1 an chaque année à partir de 2019, fonction tsCV du package forecast).",
+               "Modèle retenu : dérive (hypothèse prudente vu le peu de données).", "360px")),
         bloc("France : l'eau prélevée continue de baisser", "fr_prev",
-             "Prélèvements d'eau de la France (tous usages), observés 2015-2022 puis prévus par le modèle de dérive, avec intervalle de confiance à 95 %.",
+             "Prélèvements d'eau de la France (tous usages), observés 2015-2022 puis prévus par le modèle de dérive, avec intervalle de confiance à 95 %. Cette prévision sert de dénominateur pour la part de l'eau en 2030-2035, pour la France seulement ; pour les autres pays, les prélèvements sont gardés constants.",
              textOutput("prev_retenir", inline = TRUE), "320px")),
       nav_panel("ACP",
         layout_columns(col_widths = c(5, 7),
-          bloc("2 axes résument 64 % de l'information", "acp_eboulis",
-               "Analyse en composantes principales (FactoMineR) sur 8 indicateurs centrés-réduits, 61 pays ayant au moins 10 data centers. Barres : part de l'information (inertie) portée par chaque axe ; courbe : cumul.",
-               "On garde 5 axes (96 %) pour la classification.", "340px"),
-          bloc("Axe 1 = taille, axe 2 = eau et richesse", "acp_cercle",
+          bloc(paste0("2 axes résument ", fmt(d$acp_eig$cumul[2], 0), " % de l'information"), "acp_eboulis",
+               paste0("Analyse en composantes principales (FactoMineR, PCA avec scale.unit = TRUE) sur 8 indicateurs centrés-réduits, ", nrow(d$classes),
+                      " pays. Variables très asymétriques passées en log(1 + x) : nombre de data centers, prélèvements, stress hydrique, eau disponible par habitant, PIB par habitant, production électrique, population ; intensité carbone gardée telle quelle (déjà symétrique). Barres : part de l'information (inertie) par axe ; pointillé : seuil de Kaiser (valeur propre = 1)."),
+               paste0("On garde ", d$acp_kaiser, " axes (valeur propre > 1, critère de Kaiser ; ", fmt(d$acp_eig$cumul[d$acp_kaiser], 0),
+                      " % de l'information) pour la classification."), "340px"),
+          bloc("Axe 1 = taille et pression, axe 2 = eau disponible et équipement", "acp_cercle",
                "Cercle des corrélations : plus une flèche est longue, mieux la variable est représentée. En rouge : part de l'eau des data centers, variable supplémentaire (elle ne construit pas les axes).",
-               "La part de l'eau des data centers est plus forte dans les petits pays.", "340px")),
-        bloc("Les 61 pays sur le premier plan", "acp_ind",
-             "Coordonnées des pays sur les axes 1 et 2, colorées selon leur famille (onglet Classification).",
-             "Les pays très secs (Émirats, Arabie saoudite) se détachent, mais ont encore peu de data centers.", "420px")),
+               "La part de l'eau des data centers est plus forte dans les petits pays ; c'est en partie mécanique : elle dépend du nombre de sites et des prélèvements, deux variables actives.", "340px")),
+        layout_columns(col_widths = c(7, 5),
+          bloc(paste0("Les ", nrow(d$classes), " pays sur le premier plan"), "acp_ind",
+               "Coordonnées des pays sur les axes 1 et 2, colorées selon leur famille (onglet Classification).",
+               "Les pays très secs se détachent vers le bas, mais ont encore peu de data centers.", "420px"),
+          card(card_header(class = "d-flex justify-content-between align-items-center",
+                 span(class = "titre-bloc", "Contributions et qualité de représentation"),
+                 tooltip(bs_icon("info-circle", class = "aide"), "Contribution : part (en %) de chaque variable dans la construction de l'axe. cos² : qualité de représentation de la variable sur le plan 1-2 (1 = parfaite).")),
+               card_body(uiOutput("acp_tables")),
+               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
+                 "Le passage au log du stress hydrique rééquilibre l'analyse : les pays du Golfe ne tirent plus un axe à eux seuls.")))),
       nav_panel("Classification",
         layout_columns(col_widths = c(7, 5),
-          bloc("4 familles : la coupe la plus nette", "dendro",
-               "Classification ascendante hiérarchique (méthode de Ward) sur les 5 premiers axes de l'ACP. Plus deux pays se rejoignent bas, plus ils se ressemblent. La ligne rouge coupe l'arbre là où le saut de hauteur est le plus grand. Couleur des points : famille finale après consolidation par k-means (fonction HCPC), d'où quelques pays rattachés à une famille voisine de leur branche.",
-               "Saut entre 0,56 et 1,17 : 4 familles.", "760px"),
+          bloc(paste0(d$cah_info$k, " familles, ", fmt(d$cah_info$inter, 0), " % de l'inertie expliquée"), "dendro",
+               paste0("Classification ascendante hiérarchique (méthode de Ward sur les coordonnées factorielles) sur les ", d$cah_info$axes,
+                      " axes retenus de l'ACP, puis consolidation par k-means (fonction HCPC de FactoMineR). Plus deux pays se rejoignent bas, plus ils se ressemblent. Critère de coupure : saut de hauteur (perte d'inertie) entre deux fusions. Le plus grand saut ne sépare que 2 groupes, trop grossiers ; parmi 3 à 6 familles, on retient ", d$cah_info$k,
+                      " : groupes interprétables, aucun de moins de 3 pays. Rapport inertie inter-classes / inertie totale : ", fmt(d$cah_info$inter, 0), " %."),
+               paste0("Hauteurs des dernières fusions : ", paste(fmt(d$cah_info$hauteurs[1:5], 2), collapse = " · "), " ; coupe en ", d$cah_info$k, "."), "760px"),
           card(card_header(class = "d-flex justify-content-between align-items-center",
-                 span(class = "titre-bloc", "Portrait des 4 familles"),
-                 tooltip(bs_icon("info-circle", class = "aide"), "Valeurs médianes de chaque famille.")),
+                 span(class = "titre-bloc", paste("Portrait des", d$cah_info$k, "familles")),
+                 tooltip(bs_icon("info-circle", class = "aide"), "Valeurs médianes de chaque famille (moins sensibles aux pays extrêmes que les moyennes). En dessous : variables qui distinguent le plus la famille (v-test : au-delà de ±2, la moyenne de la famille diffère nettement de la moyenne générale).")),
                card_body(uiOutput("portrait")),
-               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
-                 "L'eau des data centers pèse surtout dans les petits pays riches."))),
+               card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ", textOutput("portrait_retenir", inline = TRUE)))),
+        card(card_header(class = "d-flex justify-content-between align-items-center",
+               span(class = "titre-bloc", "Robustesse : les familles changent-elles avec une autre méthode ?"),
+               tooltip(bs_icon("info-circle", class = "aide"), "On refait le classement par k-means seul (25 départs aléatoires) sur les mêmes axes, puis on croise les deux classements. Une famille robuste se retrouve presque entière dans un seul groupe k-means.")),
+             card_body(uiOutput("cah_robuste"))),
         bloc("Carte des 4 familles", "carte_classes",
              "Pays colorés selon leur famille. Gris : pays non classés (moins de 10 data centers).",
              "Les grands pays équipés ne sont pas ceux où l'eau des data centers pèse le plus.", "380px", leafletOutput)),
+      nav_panel("ACM",
+        layout_columns(col_widths = c(4, 8),
+          bloc(paste0("2 axes résument ", fmt(d$acm_eig$cumul[2], 0), " % de l'inertie"), "acm_eboulis",
+               paste0("Analyse des correspondances multiples (FactoMineR, MCA) sur ", nrow(d$acm_ind), " pays (", paste(d$acm_exclus, collapse = " et "),
+                      " exclus : aucun site géolocalisé). 6 indicateurs découpés en 3 classes (terciles ou seuils lisibles) : taille du parc, stress hydrique du pays (Aqueduct), PIB par habitant, intensité carbone de l'électricité, part de l'eau des data centers, part des sites en région sèche. Chaque modalité regroupe au moins 5 % des pays. La famille de la classification est ajoutée en supplémentaire. En ACM, les pourcentages d'inertie sont mécaniquement faibles : ils sous-estiment l'information portée par les axes."),
+               "Complète l'ACP avec des variables qualitatives, moins sensibles aux valeurs extrêmes.", "320px"),
+          bloc("Là où les data centers pèsent le plus sur l'eau, l'eau ne manque pas", "acm_plan",
+               "Plan des modalités (axes 1 et 2). Deux modalités proches sont souvent portées par les mêmes pays. En rouge : familles de la classification (supplémentaires, elles ne construisent pas les axes). Taille du point : nombre de pays.",
+               textOutput("acm_retenir", inline = TRUE), "520px"))),
       nav_panel("Évolution",
         div(class = "parcours d-flex align-items-center gap-2 mb-3",
           span(class = "small text-muted", "Voir l'évolution de :"),
           selectInput("pays_evo", NULL, width = "260px", CHOIX_EVO, "TOP30")),
         layout_columns(col_widths = c(7, 5),
           bloc(textOutput("evo_titre", inline = TRUE), "evo_courbes",
-               "Base 100 en 2020 (ou l'année disponible la plus proche). Data centers : électricité mondiale mesurée par l'AIE (2020, 2023, 2024) ; elle sert de repère, même quand un pays est choisi. Électricité produite et eau prélevée : panel annuel du Rapport 2 (FAO AQUASTAT pour l'eau), 2015-2022. Pour un pays, l'eau n'est pas mesurée tous les ans : seuls les points disponibles sont tracés.",
+               "Base 100 en 2020 (ou l'année disponible la plus proche). Data centers : électricité mondiale publiée par l'AIE (Energy and AI, 2025) pour 2020, 2023 et 2024 seulement ; elle sert de repère, même quand un pays est choisi. Électricité produite et eau prélevée : panel annuel du Rapport 2 (FAO AQUASTAT pour l'eau), 2015-2022. Attention : les périmètres diffèrent (monde pour les data centers, 30 pays ou un pays pour le reste). Pour un pays, l'eau n'est pas mesurée tous les ans : seuls les points disponibles sont tracés.",
                textOutput("evo_retenir", inline = TRUE), "380px"),
           card(card_header(class = "d-flex justify-content-between align-items-center",
                  span(class = "titre-bloc", "Croissance par an, et tendance"),
@@ -535,18 +627,20 @@ ui <- page_navbar(
                    "Taux de croissance annuel moyen : data centers 2020-2024, électricité et eau entre la première et la dernière année disponibles (2015-2022). Test de Mann-Kendall : la série monte-t-elle (ou baisse-t-elle) régulièrement, au-delà du hasard ? Il repose sur le tau de Kendall entre l'année et la valeur. Seuil : 5 %. Il faut au moins 4 années mesurées.")),
                card_body(uiOutput("evo_chiffres")),
                card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
-                 "Pas encore d'effet visible sur l'eau d'un pays entier.")))),
+                 paste0("Avec une part de l'ordre de ", pct(K$dc_litres / 100), " de l'eau prélevée dans le monde, l'effet ne peut pas se voir dans le total national : c'est à l'échelle locale qu'il faut regarder."))))),
       nav_panel("Pays ou région ?",
         layout_columns(col_widths = c(7, 5),
           bloc(paste(fmt(MCN$caches, 0), "data centers cachés par la moyenne du pays"), "mcn_cases", MCN_AIDE,
-               "Regarder le pays entier sous-estime le risque.", "330px", uiOutput),
+               "Site par site, regarder le pays entier sous-estime le risque.", "330px", uiOutput),
           card(card_header(class = "d-flex justify-content-between align-items-center",
                  span(class = "titre-bloc", "Le test de McNemar"),
                  tooltip(bs_icon("info-circle", class = "aide"),
-                   "Les deux pourcentages portent sur les mêmes sites : on ne peut pas les comparer comme deux échantillons indépendants. Le test de McNemar ne regarde que les sites qui changent de case (904 et 97) : si l'échelle ne changeait rien, ils seraient à peu près aussi nombreux dans les deux sens.")),
+                   paste0("Les deux pourcentages portent sur les mêmes sites : on ne peut pas les comparer comme deux échantillons indépendants. Le test de McNemar ne regarde que les sites qui changent de case (",
+                          fmt(MCN$caches, 0), " et ", fmt(MCN$inverse, 0), ") : si l'échelle ne changeait rien, ils seraient à peu près aussi nombreux dans les deux sens. Il suppose des sites indépendants, ce qui n'est pas le cas (grappes)."))),
                card_body(uiOutput("mcn_chiffres")),
                card_footer(class = "retenir", bs_icon("arrow-right-circle-fill"), " ",
-                 "L'écart n'est pas dû au hasard."))))
+                 paste0("Résultat descriptif net (", fmt(MCN$p_reg, 0), " % contre ", fmt(MCN$p_pays, 0), " % des sites) ; région par région, l'écart est faible et non significatif (",
+                        p_txt(d$mcn_regions$p), ").")))))
     )
   ),
 
@@ -572,8 +666,28 @@ ui <- page_navbar(
             tags$tr(tags$td("Photos de l'accueil"), tags$td("Wikimedia Commons : BalticServers.com (CC BY-SA 3.0), Theodore Christopher (CC0), Chad Davis (CC BY 2.0)"), tags$td(""))))),
       nav_panel("Limites",
         tags$ul(
-          tags$li("Électricité répartie selon le nombre de sites, pas leur taille."),
-          tags$li("Un seul coefficient d'eau pour tous les pays : d'où une fourchette (0,21 à 2,41 L/kWh)."),
+          tags$li(paste0("Ce que mesure l'eau estimée : le chiffre central (", fmt(K$eau_c, 0), " Mm³, ", fmt(wue[["central"]], 2),
+                         " L/kWh) est l'eau consommée sur place pour le refroidissement. En ajoutant l'eau utilisée pour produire l'électricité (", fmt(wue[["haut"]], 2),
+                         " L/kWh), on atteint ", fmt(K$eau_h, 0), " Mm³ ; en France, cette eau indirecte représente ", fmt(K$indirecte, 0), " % du total (Arcep).")),
+          tags$li("Consommation comparée à des prélèvements : les coefficients en L/kWh mesurent de l'eau consommée (évaporée), AQUASTAT mesure de l'eau prélevée (dont une grande partie est rendue). Aucune donnée de consommation nationale n'étant disponible, la « part de l'eau du pays » est minorée."),
+          tags$li(paste0("Électricité répartie selon le nombre de sites, pas leur taille : pays calés sur l'AIE (", paste(K$cales, collapse = ", "),
+                         ") = valeur publiée ; autres pays = reste de leur zone réparti par site (≈ ", fmt(K$gwh_eur, 0), " GWh par site en Europe, ",
+                         fmt(K$gwh_rdm, 0), " ailleurs). Un seul site Google (", K$google_site, ", ", fmt(K$google_m3 / 1e6, 1),
+                         " Mm³ en 2025) consomme presque autant que notre estimation pour toute la France (", fmt(K$fr_eau, 1),
+                         " Mm³) : répartir par nombre de sites sous-estime les très grands sites.")),
+          tags$li("Contrôle de la répartition : les pays comparés à l'AIE sont ceux qui y sont calés (contrôle de cohérence, pas une validation). Seul contrôle indépendant : la France, sous-estimée par rapport à ADEME-Arcep."),
+          tags$li(paste0("Un seul coefficient d'eau pour tous les pays : d'où une fourchette (", fmt(wue[["bas"]], 2), " à ", fmt(wue[["haut"]], 2), " L/kWh).")),
+          { lux <- d$pays |> filter(iso3 == "LUX")
+            tags$li(paste0("Deux indicateurs de stress différents : le « stress hydrique » du tableau par pays vient de la FAO (prélèvements / ressources renouvelables du pays) ; les « sites en région sèche » viennent de WRI Aqueduct (par région et par bassin). Exemple : Luxembourg, ",
+                           fmt(lux$stress0, 1), " % pour la FAO, mais ", fmt(lux$pct_sites_region_stress, 0), " % de ses ", lux$sites_osm,
+                           " sites géolocalisés dans une région classée ≥ 40 % par Aqueduct (canton de Luxembourg). Ce n'est pas une erreur de géocodage.")) },
+          tags$li(paste0("Test de McNemar : les sites sont groupés (", fmt(MCN$top_pct, 0), " % en ", MCN$top_region,
+                         "), la p-value est optimiste. Région par région, l'écart est faible (", fmt(d$mcn_regions$p_pays, 0), " % contre ",
+                         fmt(d$mcn_regions$p_reg, 0), " %, ", p_txt(d$mcn_regions$p), ").")),
+          tags$li(paste0("Prévision des prélèvements français : ", d$prev_fr$n_train + d$prev_fr$n_test, " années seulement (", d$prev_fr$n_train,
+                         " d'apprentissage, ", d$prev_fr$n_test, " de test, dont le Covid et la sécheresse 2022) : le choix du modèle est fragile. Pour les autres pays, les prélèvements sont gardés constants.")),
+          tags$li("Saisons à l'échelle nationale seulement ; la température humide, qui pilote vraiment l'eau du refroidissement, n'est pas prise en compte."),
+          tags$li("ACP : la part de l'eau des data centers (variable supplémentaire) dépend en partie mécaniquement du nombre de sites et des prélèvements, qui sont des variables actives."),
           tags$li("Échelle nationale pour l'estimation ; échelle régionale seulement pour le stress hydrique (Aqueduct)."),
           tags$li("Sites OpenStreetMap : inventaire partiel ; la densité dépend de la largeur du noyau."),
           tags$li("Degrés-jours calculés sur la température moyenne du mois (approximation)."),
@@ -598,12 +712,12 @@ server <- function(input, output, session) {
   output$evo_titre <- renderText({
     e <- evo(); r <- EVO$t_dc / e$t_elec
     if (is.na(r) || e$t_elec <= 0.1) "Les data centers grandissent bien plus vite que l'électricité du pays"
-    else paste0("Les data centers grandissent ", fmt(r, 0), " fois plus vite que l'électricité")
+    else paste0("Les data centers (monde) grandissent ", fmt(r, 0), " fois plus vite que l'électricité ", e$nom)
   })
   output$evo_retenir <- renderText({
     t <- evo()$mk_eau
     if (is.null(t)) "Trop peu d'années mesurées pour l'eau."
-    else if (t$p.value >= 0.05) "L'eau prélevée, elle, ne bouge pas."
+    else if (t$p.value >= 0.05) "L'eau prélevée, elle, n'a pas de tendance significative (seuil de 5 %)."
     else if (t$estimate < 0) "L'eau prélevée, elle, baisse."
     else "L'eau prélevée augmente aussi : à surveiller."
   })
@@ -633,7 +747,7 @@ server <- function(input, output, session) {
               if (is.na(taux)) "n.d." else { t1 <- round(taux, 1) + 0; paste0(ifelse(t1 > 0, "+", ""), fmt(t1, 1), " %") }))
     tend <- function(t) if (is.null(t)) "trop peu d'années pour le test" else
       if (isTRUE(t$constante)) "même valeur chaque année (chiffre officiel non actualisé)" else
-      paste0(if (t$p.value < 0.05) (if (t$estimate > 0) "hausse nette" else "baisse nette") else "pas de tendance",
+      paste0(if (t$p.value < 0.05) (if (t$estimate > 0) "hausse nette" else "baisse nette") else "pas de tendance significative au seuil de 5 %",
              " (Mann-Kendall, ", p_txt(t$p.value), ")")
     div(div(class = "small text-muted mb-2", "Croissance moyenne par an"),
         ligne("Électricité des data centers (monde)", EVO$t_dc, "#d35400"),
@@ -655,7 +769,11 @@ server <- function(input, output, session) {
     div(class = "evo-ligne", div(class = "evo-lib", "Stress élevé, vu de la région"), div(class = "evo-val", style = "color:#c0392b", paste0(fmt(MCN$p_reg, 0), " %"))),
     div(class = "evo-ligne", div(class = "evo-lib", "Khi² de McNemar (1 ddl)"), div(class = "evo-val", fmt(MCN$chi2, 0))),
     div(class = "evo-ligne", div(class = "evo-lib", "Probabilité que ce soit le hasard"), div(class = "evo-val", MCN$p_txt)),
-    div(class = "small text-muted mt-2", paste(fmt(MCN$n, 0), "sites, chacun classé deux fois (WRI Aqueduct)."))))
+    div(class = "small text-muted mt-2", paste0(fmt(MCN$n, 0), " sites, chacun classé deux fois (WRI Aqueduct). « Région sèche » : stress ≥ 40 %.")),
+    div(class = "note-limite mt-2", paste0("Les sites ne sont pas indépendants : ils sont groupés en grappes (", fmt(MCN$top_pct, 0), " % en ", MCN$top_region,
+        "). La p-value est donc optimiste ; le résultat principal est descriptif.")),
+    div(class = "evo-ligne", div(class = "evo-lib", "Contrôle : une ligne par région", div(class = "evo-tend", paste(fmt(d$mcn_regions$n, 0), "régions"))),
+        div(class = "evo-val", style = "font-size:1.1rem", paste0(fmt(d$mcn_regions$p_pays, 0), " % → ", fmt(d$mcn_regions$p_reg, 0), " % · ", p_txt(d$mcn_regions$p))))))
   observeEvent(input$nav, toggle_sidebar("sb", open = input$nav != "Accueil"), ignoreInit = FALSE)
 
   w  <- reactive(wue[[input$coef]])
@@ -691,7 +809,7 @@ server <- function(input, output, session) {
   # ---------- Carte du monde : parcours en 4 étapes
   bins <- list(part = c(0, 0.001, 0.01, 0.05, 0.1, 0.5, 1, Inf), n_dc = c(0, 5, 20, 50, 100, 300, Inf),
                stress0 = c(0, 25, 50, 75, 100, Inf))
-  titre_leg <- c(n_dc = "Nombre de data centers", part = "Part de l'eau du pays<br>utilisée par les data centers",
+  titre_leg <- c(n_dc = "Nombre de data centers", part = "Part de l'eau prélevée du pays<br>consommée par les data centers",
                  stress0 = "Manque d'eau du pays<br>(stress hydrique)")
   lab_bins <- list(n_dc = c("1 – 5", "5 – 20", "20 – 50", "50 – 100", "100 – 300", "300 et plus"),
                    part = c("moins de 0,001 %", "0,001 – 0,01 %", "0,01 – 0,05 %", "0,05 – 0,1 %", "0,1 – 0,5 %", "0,5 – 1 %", "plus de 1 %"),
@@ -711,8 +829,8 @@ server <- function(input, output, session) {
     opa <- if (iso != "MONDE") 0.45 else if (et == "4") ifelse(m$iso3 %in% surv, 0.9, 0.35) else 0.85
     lab <- ifelse(!dans, paste0("<b>", coalesce(m$country, ""), "</b>Aucun data center recensé"),
       paste0("<b>", m$country, "</b><br>", m$n_dc, " data centers",
-             "<br>Eau utilisée : ", fmt(m$eau, 2), " millions de m³",
-             "<br>Part de l'eau du pays : ", pct(m$part), " <span style='color:#888'>(entre ", pct(m$part_bas), " et ", pct(m$part_haut), ")</span>",
+             "<br>Eau consommée sur place : ", fmt(m$eau, 2), " millions de m³",
+             "<br>Part de l'eau prélevée du pays : ", pct(m$part), " <span style='color:#888'>(entre ", pct(m$part_bas), " et ", pct(m$part_haut), ")</span>",
              "<br>Manque d'eau du pays : ", ifelse(is.na(m$stress0), "n.d.", paste0(fmt(m$stress0, 0), " %")),
              "<br><i>Cliquez pour zoomer</i>")) |> lapply(htmltools::HTML)
     l <- leaflet(options = leafletOptions(worldCopyJump = TRUE, minZoom = 1, zoomSnap = 0.25)) |>
@@ -730,7 +848,7 @@ server <- function(input, output, session) {
                          fillColor = "#1f4e8b", fillOpacity = 0.6, layerId = paste0("b_", b$iso3),
                          label = lapply(paste0("<b>", b$country, "</b><br>Eau des data centers : ", fmt(b$eau, 1), " millions de m³<br>",
                                                "Manque d'eau du pays : ", ifelse(is.na(b$stress0), "n.d.", paste0(fmt(b$stress0, 0), " %"))), htmltools::HTML)) |>
-        addControl(htmltools::HTML("<div class='leg-bulle'><span class='rond'></span> Taille de la bulle =<br>eau utilisée par les data centers</div>"),
+        addControl(htmltools::HTML("<div class='leg-bulle'><span class='rond'></span> Taille de la bulle =<br>eau consommée sur place par les data centers</div>"),
                    position = "topright")
     }
     # Étape 4 : pays à surveiller entourés en rouge et nommés
@@ -786,8 +904,8 @@ server <- function(input, output, session) {
     switch(et,
       "1" = ligne(et, tags$b(paste0(fmt(sum(r$n_dc), 0), " data centers")), paste0(" · ", fmt(100 * sum(top5$n_dc) / sum(r$n_dc), 0), " % dans 5 pays")),
       "2" = { mx <- p |> filter(n_dc >= 5) |> slice_max(part, n = 1)
-              ligne(et, tags$b(paste0(fmt(sum(r$eau), 0), " millions de m³ ", quand())),
-                    paste0(" · moins de 0,1 % de l'eau du pays dans ", fmt(100 * mean(p$part < 0.1, na.rm = TRUE), 0), " % des cas · maximum : ", mx$country, " (", pct(mx$part), ")")) },
+              ligne(et, tags$b(paste0(fmt(sum(r$eau), 0), " millions de m³ consommés sur place ", quand())),
+                    paste0(" · moins de 0,1 % de l'eau prélevée du pays dans ", fmt(100 * mean(p$part < 0.1, na.rm = TRUE), 0), " % des cas · maximum : ", mx$country, " (", pct(mx$part), ")")) },
       "3" = ligne(et, tags$b(paste0(fmt(100 * sum(r$n_dc[!is.na(r$stress0) & r$stress0 < 50]) / sum(r$n_dc), 0), " % des sites")),
                   " sont dans des pays où l'eau ne manque pas"),
       "4" = { s4 <- arb() |> filter(signaux >= 2) |> arrange(-signaux)
@@ -800,7 +918,7 @@ server <- function(input, output, session) {
     if (is.na(v)) return(div(class = "text-muted small", "Part de l'eau : donnée manquante"))
     pos <- max(0, min(100, (log10(max(v, 1e-4)) + 3) / 4 * 100))
     div(class = "jauge",
-      div(class = "jauge-titre", "Part de l'eau du pays utilisée par les data centers"),
+      div(class = "jauge-titre", "Part de l'eau prélevée du pays consommée par les data centers"),
       div(class = "jauge-barre", div(class = "z1"), div(class = "z2"), div(class = "z3"),
           div(class = "jauge-curseur", style = paste0("left:", pos, "%;"), span(pct(v)))),
       div(class = "jauge-lib", span("faible"), span("à suivre (0,1 %)"), span("vigilance (1 %)")))
@@ -946,8 +1064,9 @@ server <- function(input, output, session) {
       paste0(" · ", sum(niv(rg[[input$horiz_reg]]) > niv(rg$stress_region), na.rm = TRUE), " régions plus sèches")
     } else ""
     div(class = "etape-texte", span(class = "etape-num", bs_icon("fire")), div(
-      tags$b(paste0(fmt(100 * mean(sec(dn[[input$horiz_reg]]), na.rm = TRUE), 0), " % des sites des zones denses")),
-      paste0(" en région sèche ", nom_hor()), plus_sec,
+      tags$b(paste0(fmt(100 * mean(sec(dn[[input$horiz_reg]]), na.rm = TRUE), 0), " %")),
+      paste0(" des sites situés dans les zones les plus denses (les 25 % les plus concentrés) sont en région sèche ", nom_hor(),
+             ", contre ", fmt(100 * mean(sec(o[[input$horiz_reg]]), na.rm = TRUE), 0), " % pour l'ensemble des sites"), plus_sec,
       if (nrow(hs)) paste0(" · point chaud : ", paste(hs$region, collapse = ", "))))
   })
 
@@ -1036,6 +1155,16 @@ server <- function(input, output, session) {
     paste0(mois_long[input$mois_carte], " : ", fmt(p, 0), " % des data centers en pays chaud et sec.")
   })
 
+  output$calendrier_retenir <- renderText({
+    top <- d$pays |> slice_max(n_dc, n = 20, with_ties = FALSE) |> select(iso3) |> inner_join(CENTRES |> select(iso3, lat), by = "iso3")
+    mois_hemi <- function(nord) { cl <- CLIM |> inner_join(top, by = "iso3") |> filter(if (nord) lat > 0 else lat <= 0)
+      if (!nrow(cl)) return(NULL)
+      m <- cl |> group_by(mois) |> summarise(chaud = mean(etat %in% etat_lab[1:2]), .groups = "drop") |> filter(chaud >= 0.5) |> pull(mois)
+      if (!length(m)) return(NULL); paste(mois_fr[m], collapse = ", ") }
+    n <- mois_hemi(TRUE); s <- mois_hemi(FALSE)
+    paste0("Mois chauds (plus chauds que la moyenne du pays pour au moins la moitié des pays) — nord : ", n %||% "aucun",
+           if (!is.null(s)) paste0(" ; sud : ", s) else "", ".")
+  })
   output$calendrier <- renderPlotly({
     top <- d$pays |> slice_max(n_dc, n = 20, with_ties = FALSE) |> select(iso3, country, n_dc) |>
       inner_join(CENTRES |> select(iso3, lat), by = "iso3") |> arrange(lat)
@@ -1058,23 +1187,29 @@ server <- function(input, output, session) {
   # ---------- Usages : sur 10 000 litres
   litres <- reactive({
     p <- pres() |> filter(!is.na(pct_agri), !is.na(pct_indus), !is.na(pct_menages))
+    if (!is.null(input$pays_us) && input$pays_us != "MONDE") p <- p |> filter(iso3 == input$pays_us)
     tot <- sum(p$prelev0) * 1e3                                    # millions de m3
     s <- c(agri = sum(p$prelev0 * p$pct_agri), indus = sum(p$prelev0 * p$pct_indus), men = sum(p$prelev0 * p$pct_menages))
     s <- 1e4 * s / sum(s)
     dc <- 1e4 * sum(p$eau) / tot
-    list(agri = s[["agri"]], indus = s[["indus"]], men = s[["men"]] , dc = dc)
+    list(agri = s[["agri"]], indus = s[["indus"]], men = s[["men"]] , dc = dc,
+         nom = if (is.null(input$pays_us) || input$pays_us == "MONDE") "Monde" else p$country[1],
+         annees = if (nrow(p) == 1) as.character(p$annee_secteurs) else paste0(min(p$annee_secteurs, na.rm = TRUE), " à ", max(p$annee_secteurs, na.rm = TRUE)))
   })
+  output$litres_titre <- renderText(paste0("Sur 10 000 litres prélevés — ", litres()$nom))
   output$litres <- renderUI({
     l <- litres()
     tuile <- function(ic, val, txt, cls = "") div(class = paste("tuile", cls), bs_icon(ic), div(class = "gros", val), txt)
-    layout_columns(col_widths = c(3, 3, 3, 3), fill = FALSE,
+    tagList(layout_columns(col_widths = c(3, 3, 3, 3), fill = FALSE,
       tuile("flower1", paste(fmt(l$agri, 0), "L"), "agriculture (irrigation)"),
       tuile("building", paste(fmt(l$indus, 0), "L"), "industrie et énergie"),
       tuile("house-door", paste(fmt(l$men, 0), "L"), "habitants (eau du robinet)"),
-      tuile("hdd-rack", paste(fmt(l$dc, 1), "L"), paste("data centers,", quand()), "dc"))
+      tuile("hdd-rack", paste(fmt(l$dc, 1), "L"), paste("data centers (consommés sur place),", quand()), "dc")),
+      div(class = "small text-muted mt-2", paste0("Années — usages : FAO AQUASTAT, ", l$annees, " ; data centers : ", sub("^en ", "", quand()), ".")))
   })
-  output$litres_retenir <- renderText(paste0(fmt(litres()$dc, 1), ifelse(litres()$dc >= 2, " litres", " litre"),
-    " sur 10 000 pour les data centers : faible à l'échelle nationale, le risque est local."))
+  output$litres_retenir <- renderText({ l <- litres()
+    paste0(l$nom, " : ", fmt(l$dc, 1), ifelse(l$dc >= 2, " litres", " litre"), " sur 10 000 pour les data centers ; l'agriculture en prélève environ ",
+           grand(signif(l$agri / max(l$dc, 1e-9), 2)), " fois plus. Faible à l'échelle nationale : le risque est local.") })
 
   arb <- reactive(pres() |> filter(n_dc >= 10) |>
     mutate(signaux = (!is.na(ratio_menages) & ratio_menages >= 1) + (!is.na(pct_sites_region_stress) & pct_sites_region_stress >= 25) +
@@ -1125,25 +1260,32 @@ server <- function(input, output, session) {
     x <- conv()
     tuile <- function(ic, val, txt, cls = "") div(class = paste("tuile", cls), bs_icon(ic), div(class = "gros", val), txt)
     layout_columns(col_widths = c(4, 4, 4), fill = FALSE,
-      tuile("lightning-charge", paste(fmt(x$mwh / 1e3, 1), "GWh"), paste("≈", grand(x$mwh / 4.5), "foyers")),
+      tuile("lightning-charge", paste(fmt(x$mwh / 1e3, 1), "GWh"), paste("≈", grand(x$mwh / FOYER_MWH), "foyers")),
       tuile("droplet", paste(grand(x$eau), "m³"), paste("≈", grand(x$eau / HAB_M3), "habitants")),
       tuile("cloud", paste(grand(x$co2_t), "t CO₂"), paste("≈", avec_unite(x$co2_t * 1e3 / KM_KG, "km"), "en voiture")))
   })
+  output$conv_hyp <- renderUI({ x <- conv()
+    paste0("Hypothèses : taux de charge ", fmt(100 * GWH_PAR_MW / 8.76, 0), " % (", fmt(GWH_PAR_MW, 2), " GWh par MW et par an) · foyer ",
+           fmt(FOYER_MWH, 1), " MWh/an · habitant ", fmt(HAB_M3, 0), " m³/an, soit ", fmt(HAB_M3 * 1000 / 365, 0), " L/jour (Arcep) · voiture ",
+           fmt(KM_KG * 1000, 0), " g CO₂/km · électricité de ", x$pays, " : ", fmt(x$g, 0), " g CO₂/kWh (Ember) · eau : ", fmt(w(), 2), " L/kWh.") })
   output$conv_retenir <- renderText({
     x <- conv()
-    paste0("Un data center de ", x$mw, " MW utilise autant d'électricité que ", grand(x$mwh / 4.5), " foyers et autant d'eau que ",
+    paste0("Un data center de ", x$mw, " MW utilise autant d'électricité que ", grand(x$mwh / FOYER_MWH), " foyers et autant d'eau que ",
            grand(x$eau / HAB_M3), " habitants. Mix électrique choisi : ", x$pays, " (", fmt(x$g, 0), " g de CO₂ par kWh), ",
            "soit le CO₂ de ", avec_unite(x$co2_t * 1e3 / KM_KG, "km"), " en voiture.")
   })
 
   output$directe <- renderPlotly({
+    dir <- ARCEP_TWH * wue[["bas"]]; tot <- ARCEP_TWH * wue[["haut"]]
     plot_ly(labels = c("Refroidissement sur place (eau directe)", "Production de l'électricité (eau indirecte)"),
-            values = c(0.575, 6.5 - 0.575), type = "pie", hole = 0.55, sort = FALSE,
+            values = c(dir, tot - dir), type = "pie", hole = 0.55, sort = FALSE,
             marker = list(colors = c("#1f6f8b", "#f0ad4e"), line = list(color = "#fff", width = 2)),
             textinfo = "percent", textfont = list(size = 16, color = "#fff"),
-            hovertext = c("0,575 million de m³ (0,21 L/kWh)", "5,9 millions de m³ (2,2 L/kWh)"), hoverinfo = "text+label") |>
+            hovertext = c(paste0(fmt(dir, 3), " million de m³ (", fmt(wue[["bas"]], 2), " L/kWh)"),
+                          paste0(fmt(tot - dir, 1), " millions de m³ (", fmt(wue[["haut"]] - wue[["bas"]], 1), " L/kWh)")), hoverinfo = "text+label") |>
       layout(showlegend = TRUE, legend = list(orientation = "h", x = 0, y = -0.1),
-             annotations = list(list(text = "<b>6,5</b><br>millions m³", showarrow = FALSE, font = list(size = 15))),
+             annotations = list(list(text = paste0("<b>", fmt(tot, 1), "</b><br>millions m³<br><span style='font-size:10px'>France, Arcep</span>"),
+                                     showarrow = FALSE, font = list(size = 15))),
              margin = list(t = 10, b = 10))
   })
 
@@ -1177,8 +1319,9 @@ server <- function(input, output, session) {
   })
   output$tendance_retenir <- renderText({
     iso <- pays_tend()
-    e24 <- sum(calculer(w(), "central", 2024)$eau[d$pays$iso3 == iso]); e35 <- sum(calculer(w(), "central", 2035)$eau[d$pays$iso3 == iso])
-    paste0("Data centers ×", fmt(e35 / max(e24, 1e-9), 1), " d'ici 2035, toujours loin derrière les autres usages.")
+    e <- evol_pays(iso, w(), "central")
+    paste0("Data centers (croissance centrale) : volume d'eau ×", fmt(e$f_vol, 1), " d'ici 2035 ; part de l'eau prélevée ",
+           pct(e$part24), " → ", pct(e$part35), " (", e$denominateur, "). Toujours loin derrière les autres usages.")
   })
 
 
@@ -1253,12 +1396,14 @@ server <- function(input, output, session) {
   })
   output$frscen_retenir <- renderText({
     f <- fr_scen(); i35 <- f$h == "2035"
-    paste0("×", fmt(min(f$eau[i35]) / f$eau[1], 1), " à ×", fmt(max(f$eau[i35]) / f$eau[1], 1), " d'ici 2035 ; l'IA en explique environ ",
-           fmt(100 * max(f$eau_ia[i35] / f$eau[i35]), 0), " %.")
+    e <- evol_pays("FRA", w(), "central")
+    paste0("Volume ×", fmt(min(f$eau[i35]) / f$eau[1], 1), " à ×", fmt(max(f$eau[i35]) / f$eau[1], 1), " d'ici 2035 (centrale : ×", fmt(e$f_vol, 1),
+           ") ; part de l'eau prélevée ", pct(e$part24), " → ", pct(e$part35), " en croissance centrale ; l'IA explique environ ",
+           fmt(100 * max(f$eau_ia[i35] / f$eau[i35]), 0), " % du volume.")
   })
   output$fr_titre <- renderText({
     f <- fr_scen()
-    paste0("France : jusqu'à ", pct(max(f$part)), " de l'eau en 2035")
+    paste0("France : jusqu'à ", pct(max(f$part)), " de l'eau prélevée en 2035")
   })
 
 
@@ -1268,11 +1413,14 @@ server <- function(input, output, session) {
     et <- function(n, titre, val) div(class = "etape", span(class = "num", n), div(tags$b(titre)), div(class = "val", val))
     fl <- div(class = "fleche", bs_icon("arrow-right"))
     div(class = "etapes",
-      et(1, "Électricité mondiale (AIE)", "415 TWh"), fl,
-      et(2, "Part de la France (selon ses sites)", paste(fmt(fr$e0, 1), "TWh")), fl,
-      et(3, "× litres d'eau par kWh", paste(fmt(fr$e0 * w(), 1), "Mm³")), fl,
-      et(4, "÷ eau prélevée en France", pct(100 * fr$e0 * w() / (fr$prelev0 * 1e3))), fl,
-      et(5, "Projection 2035 (AIE)", "x1,7 à x4,1"))
+      et(1, "Électricité mondiale des data centers (AIE)", paste(fmt(K$twh, 0), "TWh")), fl,
+      et(2, tagList("Répartition par pays", div(class = "etape-det", paste0("Pays calés sur l'AIE : valeur publiée. Autres pays : reste de leur zone réparti selon le nombre de sites (≈ ",
+                    fmt(K$gwh_eur, 0), " GWh par site en Europe). France : ", fr$n_dc, " sites"))), paste(fmt(fr$e0, 1), "TWh")), fl,
+      et(3, "× litres d'eau consommés sur place par kWh", paste(fmt(fr$e0 * w(), 1), "Mm³")), fl,
+      et(4, tagList("÷ eau prélevée en France", div(class = "etape-det", "consommation comparée à un prélèvement : part minorée")),
+         pct(100 * fr$e0 * w() / (fr$prelev0 * 1e3))), fl,
+      et(5, "Projection 2035, zone Europe (AIE)", { f <- d$scen_zone |> filter(zone == "EUR", horizon == 2035)
+         paste0("×", fmt(min(f$f_zone), 1), " à ×", fmt(max(f$f_zone), 1)) }))
   })
   output$coefs <- renderPlotly({
     k <- tibble(nom = c("0,21 L/kWh", "0,81 L/kWh", "2,41 L/kWh"), w = unname(wue)) |> mutate(eau = 415 * w, nom = factor(nom, nom))
@@ -1280,11 +1428,20 @@ server <- function(input, output, session) {
             text = ~paste(fmt(eau, 0), "Mm³"), textposition = "outside", hoverinfo = "none") |>
       layout(xaxis = list(title = ""), yaxis = list(title = "Millions de m³ (monde, 2024)", range = c(0, 1200)))
   })
+  validation_fr <- reactive({
+    fr <- d$pays |> filter(iso3 == "FRA"); ref <- d$refs_fr |> filter(grepl("tout le parc", source))
+    bind_rows(d$validation |> mutate(country = paste0(country, " (calé)")),
+              tibble(iso3 = "FRA", country = "France (non calée)", modele_pct = 100 * fr$e0 / fr$elec, ref_pct = 100 * ref$twh / fr$elec,
+                     statut = ref$source, twh_mod = fr$e0, twh_ref = ref$twh))
+  })
+  output$validation_retenir <- renderText({ v <- validation_fr() |> filter(iso3 == "FRA")
+    paste0("France, seul contrôle indépendant : ", fmt(v$twh_mod, 1), " TWh dans notre modèle contre ", fmt(v$twh_ref, 0),
+           " TWh (ADEME-Arcep, 2020) : la répartition par nombre de sites sous-estime.") })
   output$validation <- renderPlotly({
-    v <- d$validation |> arrange(modele_pct) |> mutate(country = factor(country, country))
+    v <- validation_fr() |> arrange(modele_pct) |> mutate(country = factor(country, country))
     plot_ly(v, y = ~country) |>
       add_bars(x = ~modele_pct, name = "Notre modèle", marker = list(color = "#1f6f8b"), orientation = "h") |>
-      add_bars(x = ~ref_pct, name = "AIE", marker = list(color = "#bdbdbd"), orientation = "h") |>
+      add_bars(x = ~ref_pct, name = "Valeur publiée (AIE ; ADEME-Arcep pour la France)", marker = list(color = "#bdbdbd"), orientation = "h") |>
       layout(barmode = "group", xaxis = list(title = "% de l'électricité du pays", type = "log",
                                             tickvals = c(0.5, 1, 2, 5, 10, 20), ticktext = c("0,5", "1", "2", "5", "10", "20")),
              yaxis = list(title = ""), legend = LEG)
@@ -1302,12 +1459,20 @@ server <- function(input, output, session) {
     p |> layout(shapes = list(list(type = "rect", x0 = 2014.6, x1 = 2019.5, y0 = 0, y1 = 1, yref = "paper", fillcolor = "#999", opacity = 0.12, line = list(width = 0))),
                 xaxis = list(title = "", dtick = 1), yaxis = list(title = "Eau prélevée en France (Mds m³)"), legend = list(orientation = "h", x = 0, y = -0.12))
   })
+  output$mae_titre <- renderText({ s <- d$prev_fr$scores; o <- s |> filter(modele != d$prev_fr$choix)
+    ch <- s |> filter(modele == d$prev_fr$choix)
+    paste0("MAE ", fmt(ch$MAE, 2), " contre ", fmt(min(o$MAE), 1), " à ", fmt(max(o$MAE), 1), " (test) ; ", fmt(ch$MAE_cv, 2), " contre ",
+           fmt(min(o$MAE_cv), 2), " à ", fmt(max(o$MAE_cv), 2), " (validation croisée)") })
   output$mae <- renderPlotly({
     s <- d$prev_fr$scores |> arrange(desc(MAE)) |> mutate(modele = factor(modele, modele))
-    plot_ly(s, y = ~modele, x = ~MAE, type = "bar", orientation = "h",
-            marker = list(color = ifelse(as.character(s$modele) == d$prev_fr$choix, "#2ca02c", "#c7c7c7")),
-            text = ~fmt(MAE, 2), textposition = "outside", hoverinfo = "none") |>
-      layout(xaxis = list(title = "Erreur moyenne (Mds m³)", range = c(0, 3)), yaxis = list(title = ""))
+    plot_ly(s, y = ~modele) |>
+      add_bars(x = ~MAE, name = "MAE test 2020-2022", orientation = "h", marker = list(color = "#c7c7c7"),
+               text = ~fmt(MAE, 2), textposition = "outside",
+               hovertext = ~paste0(modele, " · test : MAE ", fmt(MAE, 2), ", RMSE ", fmt(RMSE, 2)), hoverinfo = "text") |>
+      add_bars(x = ~MAE_cv, name = "MAE validation croisée", orientation = "h", marker = list(color = "#1f6f8b"),
+               text = ~fmt(MAE_cv, 2), textposition = "outside",
+               hovertext = ~paste0(modele, " · validation croisée (", n_cv, " prévisions) : MAE ", fmt(MAE_cv, 2), ", RMSE ", fmt(RMSE_cv, 2)), hoverinfo = "text") |>
+      layout(barmode = "group", xaxis = list(title = "Erreur absolue moyenne (Mds m³)", range = c(0, 3)), yaxis = list(title = ""), legend = LEG)
   })
   output$carte_classes <- renderLeaflet({
     m <- d$monde |> left_join(d$classes |> select(iso3, country, nom_classe), by = "iso3")
@@ -1324,20 +1489,40 @@ server <- function(input, output, session) {
     plot_ly(cl, x = ~dim1, y = ~dim2, color = ~nom_classe, colors = col_classes, type = "scatter", mode = "markers+text",
             text = ~etiq, textposition = "top center", textfont = list(size = 10, color = "#333"), marker = list(size = 11, opacity = 0.8),
             hovertext = ~paste0("<b>", country, "</b><br>", nom_classe), hoverinfo = "text") |>
-      layout(xaxis = list(title = "← petits pays          grands pays →", zeroline = TRUE),
-             yaxis = list(title = "← pays secs          eau et richesse →", zeroline = TRUE),
+      layout(xaxis = list(title = "← petits pays          grands pays, plus de stress →", zeroline = TRUE),
+             yaxis = list(title = "← secs, électricité carbonée          eau abondante, riches, équipés →", zeroline = TRUE),
              legend = list(orientation = "h", x = 0, y = -0.22))
   })
 
   # ---------- Méthode : ACP et classification
   output$acp_eboulis <- renderPlotly({
-    e <- d$acp_eig |> mutate(axe = factor(axe, axe))
+    e <- d$acp_eig |> mutate(axe = factor(sub("Axe ", "", axe), sub("Axe ", "", axe)))
+    seuil <- 100 / nrow(e)
     plot_ly(e, x = ~axe) |>
-      add_bars(y = ~inertie, name = "Par axe", marker = list(color = c("#1f6f8b", "#1f6f8b", "#9ecae1", "#9ecae1", "#9ecae1")),
-               text = ~paste0(fmt(inertie, 0), " %"), textposition = "outside", hoverinfo = "none") |>
+      add_bars(y = ~inertie, name = "Par axe", marker = list(color = ifelse(seq_len(nrow(e)) <= d$acp_kaiser, "#1f6f8b", "#c6dbef")),
+               text = ~paste0(fmt(inertie, 0), " %"), textposition = "outside",
+               hovertext = ~paste0("Axe ", axe, " : valeur propre ", fmt(valeur_propre, 2)), hoverinfo = "text") |>
       add_lines(y = ~cumul, name = "Cumul", line = list(color = "#d35400", width = 3), marker = list(color = "#d35400"),
                 mode = "lines+markers", hovertext = ~paste0("Cumul : ", fmt(cumul, 0), " %"), hoverinfo = "text") |>
-      layout(xaxis = list(title = ""), yaxis = list(title = "% de l'information", range = c(0, 105)), legend = LEG)
+      layout(xaxis = list(title = "Axe"), yaxis = list(title = "% de l'information", range = c(0, 105)), legend = LEG,
+             shapes = list(list(type = "line", x0 = -0.5, x1 = nrow(e) - 0.5, y0 = seuil, y1 = seuil, line = list(dash = "dot", color = "#c0392b"))))
+  })
+  output$acp_tables <- renderUI({
+    t <- d$acp_contrib; cm <- d$acp_cmp; ex <- d$acp_exclus
+    tagList(
+      tags$table(class = "table table-sm mb-2",
+        tags$thead(tags$tr(tags$th("Variable"), tags$th("Axe 1"), tags$th("Axe 2"), tags$th("cos² (1-2)"))),
+        tags$tbody(lapply(seq_len(nrow(t)), function(i) tags$tr(tags$td(t$variable[i]), tags$td(paste0(fmt(t$axe1[i], 0), " %")),
+                                                                tags$td(paste0(fmt(t$axe2[i], 0), " %")), tags$td(fmt(t$cos2[i], 2)))))),
+      div(class = "fiche-sous", "Avant / après le passage au log du stress hydrique"),
+      tags$table(class = "table table-sm mb-2",
+        tags$thead(tags$tr(tags$th(""), tags$th("Axes 1+2"), tags$th("cos² stress"), tags$th("Pays le plus influent"))),
+        tags$tbody(lapply(seq_len(nrow(cm)), function(i) tags$tr(tags$td(cm$version[i]), tags$td(paste0(fmt(cm$cumul2[i], 0), " %")),
+          tags$td(fmt(cm$cos2_stress[i], 2)), tags$td(paste0(cm$pays_max[i], " (", fmt(cm$contrib_max_pays[i], 0), " %)")))))),
+      tags$details(tags$summary(paste0("Pourquoi ", nrow(d$classes), " pays et pas ", nrow(d$pays), " ? (", nrow(ex), " exclus)")),
+        p(class = "small mb-1", paste0("Critère : au moins 10 data centers (en dessous, les profils reposent sur trop peu de sites) et données complètes. Motifs : ",
+          paste(names(table(ex$motif)), table(ex$motif), sep = " = ", collapse = " ; "), ".")),
+        p(class = "small text-muted", paste(ex$country, collapse = ", "))))
   })
   output$acp_cercle <- renderPlotly({
     v <- d$acp_var; th <- seq(0, 2 * pi, length.out = 200)
@@ -1352,8 +1537,8 @@ server <- function(input, output, session) {
       add_trace(data = v, x = ~dim1 * 1.12, y = ~dim2 * 1.1, text = ~variable, type = "scatter", mode = "text",
                 textfont = list(color = ifelse(v$sup, "#c0392b", "#333"), size = 11),
                 hovertext = ~paste0(variable, "<br>Axe 1 : ", fmt(dim1, 2), "<br>Axe 2 : ", fmt(dim2, 2)), hoverinfo = "text", showlegend = FALSE) |>
-      layout(xaxis = list(title = "Axe 1 : taille du pays", range = c(-1.45, 1.45), zeroline = TRUE),
-             yaxis = list(title = "Axe 2 : eau et richesse", range = c(-1.2, 1.2), zeroline = TRUE, scaleanchor = "x"))
+      layout(xaxis = list(title = paste0("Axe 1 (", fmt(d$acp_eig$inertie[1], 0), " %) : taille et pression"), range = c(-1.45, 1.45), zeroline = TRUE),
+             yaxis = list(title = paste0("Axe 2 (", fmt(d$acp_eig$inertie[2], 0), " %) : eau disponible et équipement"), range = c(-1.2, 1.2), zeroline = TRUE, scaleanchor = "x"))
   })
 
   # Dendrogramme (arbre hclust de HCPC), à l'horizontale
@@ -1370,7 +1555,7 @@ server <- function(input, output, session) {
     sg <- do.call(rbind, segs)
     df <- data.frame(x = as.vector(rbind(sg[, 1], sg[, 3], NA)), y = as.vector(rbind(sg[, 2], sg[, 4], NA)))
     feuilles <- tibble(country = h$labels, y = pos) |> left_join(d$classes |> select(country, nom_classe), by = "country")
-    coupe <- mean(sort(h$height, decreasing = TRUE)[3:4])
+    coupe <- mean(sort(h$height, decreasing = TRUE)[(d$cah_info$k - 1):d$cah_info$k])
     p <- plot_ly() |>
       add_trace(data = df, x = ~x, y = ~y, type = "scatter", mode = "lines", line = list(color = "#7a8a94", width = 1.2),
                 hoverinfo = "none", showlegend = FALSE)
@@ -1396,15 +1581,69 @@ server <- function(input, output, session) {
         div(class = "famille-nom", x$nom_classe, span(class = "famille-n", paste(x$pays, "pays"))),
         div(class = "famille-val", paste0(fmt(x$sites, 0), " sites · ", fmt(x$hab, 0), " M hab. · ", fmt(x$pib / 1000, 0), " k$/hab. · stress ",
                                           fmt(x$stress, 0), " % · eau DC ", pct(x$part))),
-        div(class = "famille-ex", x$ex))
+        div(class = "famille-ex", x$ex),
+        div(class = "famille-vt", vt(x$nom_classe)))
     }
+    noms_v <- c(n_dc = "data centers", prelev_vol = "prélèvements", stress_hydrique = "stress hydrique", eau_renouv_hab = "eau disponible/hab.",
+                pib_hab = "PIB/hab.", elec_generation_twh = "production électrique", elec_emissions_intensity_gco2e_kwh = "électricité carbonée",
+                population = "population", part_central = "part eau DC")
+    num_nom <- d$classes |> distinct(classe, nom_classe)
+    vt <- function(nom) { k <- num_nom$classe[num_nom$nom_classe == nom]
+      v <- d$cah_desc |> filter(classe == k, abs(vtest) >= 2) |> arrange(-abs(vtest)) |> head(3)
+      if (!nrow(v)) return("aucune variable très distinctive")
+      paste0("Se distingue par : ", paste0(ifelse(v$vtest > 0, "+ ", "− "), noms_v[v$var], " (v = ", fmt(v$vtest, 1), ")", collapse = " · ")) }
     tagList(lapply(seq_len(nrow(t)), carte))
   })
+  output$portrait_retenir <- renderText({
+    t <- d$classes |> group_by(nom_classe) |> summarise(part = median(part_central), n = n(), .groups = "drop")
+    m <- t |> slice_max(part, n = 1); petit <- t |> filter(n <= 2)
+    paste0("L'eau des data centers pèse surtout dans la famille « ", m$nom_classe, " » (médiane ", pct(m$part), ").",
+           if (nrow(petit)) paste0(" « ", paste(petit$nom_classe, collapse = ", "), " » : groupe de valeurs extrêmes (", paste(petit$n, collapse = ", "), " pays).") else "") })
+  output$cah_robuste <- renderUI({
+    km <- d$cah_km; num_nom <- d$classes |> distinct(classe, nom_classe)
+    noms <- num_nom$nom_classe[match(as.integer(rownames(km)), num_nom$classe)]
+    stab <- apply(km, 1, function(r) 100 * max(r) / sum(r))
+    tagList(
+      p(paste0("Accord global CAH / k-means : ", fmt(d$cah_accord, 0), " % des pays restent ensemble. Famille par famille :")),
+      tags$table(class = "table table-sm mb-0",
+        tags$thead(tags$tr(tags$th("Famille (CAH)"), lapply(colnames(km), function(j) tags$th(paste("k-means", j))), tags$th("Stabilité"))),
+        tags$tbody(lapply(seq_len(nrow(km)), function(i) tags$tr(tags$td(noms[i]), lapply(km[i, ], function(v) tags$td(v)),
+                                                                  tags$td(tags$b(paste0(fmt(stab[i], 0), " %"))))))),
+      p(class = "small text-muted mt-2", paste0("Famille la moins stable : « ", noms[which.min(stab)], " » ; la plus stable : « ", noms[which.max(stab)], " ».")))
+  })
+
+  # ---------- Méthode : ACM
+  output$acm_eboulis <- renderPlotly({
+    e <- d$acm_eig |> head(8) |> mutate(axe = factor(sub("Axe ", "", axe), sub("Axe ", "", axe)))
+    plot_ly(e, x = ~axe, y = ~inertie, type = "bar", marker = list(color = c("#1f6f8b", "#1f6f8b", rep("#c6dbef", nrow(e) - 2))),
+            text = ~paste0(fmt(inertie, 0), " %"), textposition = "outside", hoverinfo = "none") |>
+      layout(xaxis = list(title = "Axe"), yaxis = list(title = "% de l'inertie", range = c(0, max(e$inertie) * 1.2)))
+  })
+  output$acm_plan <- renderPlotly({
+    m <- d$acm_mod |> mutate(groupe = ifelse(sup, "Famille (supplémentaire)", variable),
+                             etiq = sub("^[^:]+ : ", "", modalite), etiq = ifelse(sup, modalite, etiq))
+    noms_var <- c(Parc = "Taille du parc", Stress = "Stress du pays", Richesse = "PIB par habitant", Carbone = "Électricité",
+                  Part_eau = "Part de l'eau des DC", Sites_secs = "Sites en région sèche")
+    m$groupe <- ifelse(m$groupe %in% names(noms_var), noms_var[m$groupe], m$groupe)
+    cols <- c(setNames(c("#1f77b4", "#d62728", "#2ca02c", "#7f7f7f", "#ff7f0e", "#9467bd"), unname(noms_var)), "Famille (supplémentaire)" = "#c0392b")
+    plot_ly(m, x = ~dim1, y = ~dim2, color = ~groupe, colors = cols, type = "scatter", mode = "markers+text",
+            text = ~etiq, textposition = "top center", textfont = list(size = 10),
+            marker = list(size = ~ifelse(sup, 12, 6 + 1.2 * sqrt(coalesce(n, 10))), opacity = 0.85),
+            hovertext = ~paste0("<b>", modalite, "</b><br>", ifelse(is.na(n), "", paste(n, "pays")),
+                                ifelse(sup, "", paste0("<br>Contribution axe 1 : ", fmt(contrib1, 1), " % · axe 2 : ", fmt(contrib2, 1), " %"))), hoverinfo = "text") |>
+      layout(xaxis = list(title = paste0("Axe 1 (", fmt(d$acm_eig$inertie[1], 0), " %) : ← eau abondante, pays riches          stress, électricité carbonée →"), zeroline = TRUE),
+             yaxis = list(title = paste0("Axe 2 (", fmt(d$acm_eig$inertie[2], 0), " %)"), zeroline = TRUE), legend = list(orientation = "h", x = 0, y = -0.15))
+  })
+  output$acm_retenir <- renderText({
+    m <- d$acm_mod |> filter(!sup) |> arrange(-contrib1)
+    paste0("Axe 1 : « ", m$modalite[1], " » et « ", m$modalite[2], " » s'opposent à « ",
+           (m |> filter(dim1 < 0) |> slice_max(contrib1, n = 1))$modalite, " ». La part de l'eau des data centers est forte là où le stress est faible.") })
 
   # ---------- Sources
   tab <- reactive(res() |> transmute(Pays = country, `Data centers` = n_dc, `Électricité (TWh)` = round(e_h, 2),
-    `Eau (Mm³)` = round(eau, 2), `Part de l'eau du pays (%)` = signif(part, 3), `Stress hydrique (%)` = round(stress0, 1),
-    `Sites en région sèche (%)` = round(pct_sites_region_stress, 1)) |> arrange(desc(`Part de l'eau du pays (%)`)))
+    `Eau consommée sur place (Mm³)` = round(eau, 2), `Part de l'eau prélevée du pays (%)` = signif(part, 3), `Stress hydrique FAO (%)` = round(stress0, 1),
+    `Sites en région sèche (%)` = round(pct_sites_region_stress, 1), `Calé sur l'AIE` = ifelse(cale_aie, "oui", "non"),
+    `GWh par site` = round(gwh_site, 1)) |> arrange(desc(`Part de l'eau prélevée du pays (%)`)))
   output$tab_pays <- renderDT(datatable(tab(), rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE)))
   output$dl <- downloadHandler(filename = function() paste0("eau_datacenters_", hz(), ".csv"),
                                content = function(f) write.csv(tab(), f, row.names = FALSE, fileEncoding = "UTF-8"))

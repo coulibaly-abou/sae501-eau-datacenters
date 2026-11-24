@@ -86,7 +86,13 @@ dc_pays <- dcw |>
   ungroup() |>
   select(iso3, country, zone, n_dc, e0) |>
   left_join(elec_nat, by = "iso3")
+TWH_MONDE <- sum(dc_pays$e0)   # 415 TWh répartis (AIE 2024, hors cryptomonnaies)
 stopifnot(abs(sum(dc_pays$e0) - 415) < 1e-6)
+# Pays « calés sur l'AIE » : valeur publiée (Irlande, Japon, Inde) ou total de zone AIE (États-Unis, Chine).
+# Les autres reçoivent le reste de leur zone, réparti selon le nombre de sites (GWh par site identique dans la zone).
+dc_pays <- dc_pays |> mutate(cale_aie = iso3 %in% ancres$iso3 | zone %in% c("USA", "CHN"),
+                             gwh_site = 1000 * e0 / n_dc)
+gwh_site_zone <- dc_pays |> filter(!cale_aie) |> group_by(zone) |> summarise(gwh_site = first(gwh_site), .groups = "drop")
 
 # --- 4. Ressource en eau -------------------------------------------------------
 ressource <- panel |>
@@ -119,13 +125,59 @@ profil <- panel |>
   inner_join(present |> select(iso3, part_central), by = "iso3")
 
 base_acp <- profil |> filter(n_dc >= 10) |> drop_na(all_of(vars_actives), part_central)
+# Pays exclus de l'ACP et motif (affichés dans l'onglet ACP)
+acp_exclus <- pays |>
+  left_join(profil |> select(iso3, all_of(setdiff(vars_actives, "n_dc")), part_central), by = "iso3") |>
+  filter(!iso3 %in% base_acp$iso3) |>
+  mutate(motif = ifelse(n_dc < 10, "moins de 10 data centers", "données incomplètes")) |>
+  transmute(country, n_dc, motif) |> arrange(motif, desc(n_dc))
+
+# Asymétrie : justifie le passage au log (relecture du 24/11/2026)
+asymetrie <- function(x) { x <- x[!is.na(x)]; mean((x - mean(x))^3) / sd(x)^3 }
+acp_asym <- tibble(variable = vars_actives,
+                   brute = sapply(vars_actives, function(v) asymetrie(base_acp[[v]])),
+                   log = sapply(vars_actives, function(v) asymetrie(log1p(base_acp[[v]]))))
+
+# Version initiale (stress brut) gardée pour comparaison avant / après
+X_avant <- base_acp |> mutate(across(all_of(c(vars_log, "part_central")), log1p)) |>
+  select(country, all_of(vars_actives), part_central) |> column_to_rownames("country")
+acp_avant <- PCA(X_avant, scale.unit = TRUE, ncp = 5, graph = FALSE, quanti.sup = which(names(X_avant) == "part_central"))
+# Version retenue : stress hydrique aussi en log (asymétrie 5,5 -> 1,0) ; intensité carbone brute (asymétrie 0,0)
+vars_log <- c(vars_log, "stress_hydrique")
 X <- base_acp |>
   mutate(across(all_of(c(vars_log, "part_central")), log1p)) |>
   select(country, all_of(vars_actives), part_central) |>
   column_to_rownames("country")
-acp <- PCA(X, scale.unit = TRUE, ncp = 5, graph = FALSE,
+acp <- PCA(X, scale.unit = TRUE, ncp = 8, graph = FALSE,
            quanti.sup = which(names(X) == "part_central"))
-cah <- HCPC(acp, nb.clust = -1, graph = FALSE)
+acp_kaiser <- sum(acp$eig[, 1] > 1)                     # critère de Kaiser (valeur propre > 1)
+acp_cmp <- tibble(version = c("Avant (stress brut)", "Après (stress en log)"),
+                  axe1 = c(acp_avant$eig[1, 2], acp$eig[1, 2]), axe2 = c(acp_avant$eig[2, 2], acp$eig[2, 2]),
+                  cumul2 = c(acp_avant$eig[2, 3], acp$eig[2, 3]),
+                  cos2_stress = c(sum(acp_avant$var$cos2["stress_hydrique", 1:2]), sum(acp$var$cos2["stress_hydrique", 1:2])),
+                  contrib_max_pays = c(max(acp_avant$ind$contrib[, 1:2]), max(acp$ind$contrib[, 1:2])),
+                  pays_max = c(rownames(acp_avant$ind$contrib)[which.max(apply(acp_avant$ind$contrib[, 1:2], 1, max))],
+                               rownames(acp$ind$contrib)[which.max(apply(acp$ind$contrib[, 1:2], 1, max))]))
+
+# CAH (Ward) sur les axes retenus par Kaiser, consolidée par k-means (HCPC)
+acp_k <- PCA(X, scale.unit = TRUE, ncp = acp_kaiser, graph = FALSE, quanti.sup = which(names(X) == "part_central"))
+cah0 <- HCPC(acp_k, nb.clust = -1, graph = FALSE, consol = FALSE)
+haut <- sort(cah0$call$t$tree$height, decreasing = TRUE)
+NB_CLASSES <- 4   # À VÉRIFIER : plus grand saut = 2 groupes (trop grossier) ; 4 = groupes lisibles, aucun < 3 pays
+cah <- HCPC(acp_k, nb.clust = NB_CLASSES, graph = FALSE, consol = TRUE)
+W <- cah$call$t$within
+cah_info <- list(k = NB_CLASSES, axes = acp_kaiser, hauteurs = head(haut, 8),
+                 inter_k = 100 * (1 - W[2:8] / W[1]), inter = 100 * (1 - W[NB_CLASSES] / W[1]))
+# Robustesse : k-means directement sur les mêmes axes (25 départs), tableau croisé des appartenances
+set.seed(2026)
+km <- kmeans(acp_k$ind$coord, centers = NB_CLASSES, nstart = 25)
+cah_km <- table(CAH = cah$data.clust$clust[match(rownames(acp_k$ind$coord), rownames(cah$data.clust))], kmeans = km$cluster)
+cah_accord <- 100 * sum(apply(cah_km, 1, max)) / sum(cah_km)
+# Description des classes : variables significatives (v-test)
+cah_desc <- bind_rows(lapply(names(cah$desc.var$quanti), function(k) {
+  t <- cah$desc.var$quanti[[k]]; if (is.null(t)) return(NULL)
+  tibble(classe = as.integer(k), var = rownames(t), vtest = t[, "v.test"], moy_classe = t[, "Mean in category"],
+         moy_tot = t[, "Overall mean"], p = t[, "p.value"]) }))
 
 noms_var <- c(n_dc = "Nb data centers", prelev_vol = "Prélèvements d'eau",
               stress_hydrique = "Stress hydrique", eau_renouv_hab = "Eau dispo / hab.",
@@ -155,7 +207,11 @@ acp_var <- tibble(variable = noms_var[rownames(acp$var$coord)],
                   dim1 = acp$var$coord[, 1], dim2 = acp$var$coord[, 2], sup = FALSE) |>
   bind_rows(tibble(variable = noms_var["part_central"],
                    dim1 = acp$quanti.sup$coord[, 1], dim2 = acp$quanti.sup$coord[, 2], sup = TRUE))
-acp_eig <- tibble(axe = paste("Axe", 1:5), inertie = acp$eig[1:5, 2], cumul = acp$eig[1:5, 3])
+acp_eig <- tibble(axe = paste("Axe", seq_len(nrow(acp$eig))), valeur_propre = acp$eig[, 1],
+                  inertie = acp$eig[, 2], cumul = acp$eig[, 3])
+acp_contrib <- tibble(variable = noms_var[rownames(acp$var$contrib)], axe1 = acp$var$contrib[, 1], axe2 = acp$var$contrib[, 2],
+                      cos2 = rowSums(acp$var$cos2[, 1:2])) |> arrange(desc(axe1 + axe2))
+
 
 # --- 6. Historique 30 pays les plus équipés ------------------------------------
 pays_dc <- dc_pays |> slice_max(n_dc, n = 30) |> pull(iso3)
@@ -187,13 +243,27 @@ prevoir <- function(annees, valeurs, fin = 2035, n_test = 3) {
     "ARIMA"  = function(s, h) forecast(auto.arima(s, seasonal = FALSE, max.p = 2, max.q = 2), h = h, level = 95))
   mae <- sapply(modeles, function(f) tryCatch(mean(abs(as.numeric(f(train, n_test)$mean) - test)),
                                               error = function(e) NA_real_))
+  rmse <- sapply(modeles, function(f) tryCatch(sqrt(mean((as.numeric(f(train, n_test)$mean) - test)^2)),
+                                               error = function(e) NA_real_))
   choix <- names(which.min(mae)); prev <- modeles[[choix]](y, h)
-  list(scores = tibble(modele = names(mae), MAE = mae), choix = choix,
+  list(scores = tibble(modele = names(mae), MAE = mae, RMSE = rmse), choix = choix, n_train = n - n_test, n_test = n_test,
        obs = tibble(annee = annees, valeur = valeurs),
        prev = tibble(annee = max(annees) + seq_len(h), prevision = as.numeric(prev$mean),
                      basse = as.numeric(prev$lower[, 1]), haute = as.numeric(prev$upper[, 1])))
 }
 prev_fr <- prevoir(fr$year, fr$prelev_vol)
+# Validation croisée glissante (origine mobile, horizon 1 an) : plus robuste qu'un seul découpage 5 + 3 ans
+fr_y <- ts(fr$prelev_vol[!is.na(fr$prelev_vol)], start = min(fr$year[!is.na(fr$prelev_vol)]))
+fonctions_cv <- list(
+  "Naïf"   = function(x, h) naive(x, h = h),
+  "Dérive" = function(x, h) rwf(x, h = h, drift = TRUE),
+  "ETS"    = function(x, h) forecast(ets(x), h = h),
+  "ARIMA"  = function(x, h) forecast(auto.arima(x, seasonal = FALSE, max.p = 2, max.q = 2), h = h))
+prev_cv <- bind_rows(lapply(names(fonctions_cv), function(m) {
+  e <- suppressWarnings(tsCV(fr_y, fonctions_cv[[m]], h = 1, initial = 3))
+  tibble(modele = m, MAE_cv = mean(abs(e), na.rm = TRUE), RMSE_cv = sqrt(mean(e^2, na.rm = TRUE)), n_cv = sum(!is.na(e))) }))
+test_vals <- tail(as.numeric(fr_y), 3)
+prev_fr$scores <- prev_fr$scores |> left_join(prev_cv, by = "modele")
 
 # =============================================================================
 # 8. AJOUTS suite aux remarques du jury (20/11/2026)
@@ -225,6 +295,14 @@ echelles <- bind_rows(
   osm |> filter(!is.na(stress_pays), !is.na(stress_region)) |> count(classe = stress_pays) |> mutate(echelle = "Pays entier"),
   osm |> filter(!is.na(stress_pays), !is.na(stress_region)) |> count(classe = stress_region) |> mutate(echelle = "Région du site")) |>
   group_by(echelle) |> mutate(part = 100 * n / sum(n)) |> ungroup()
+
+# McNemar : les sites sont groupés en grappes (même région = même classement). Contrôle : une seule ligne par région.
+sec_aq <- function(cat) !is.na(cat) & cat >= 3          # « région sèche » = stress Aqueduct ≥ 40 % (classes Élevé et Extrêmement élevé)
+par_region <- osm |> filter(!is.na(stress_pays), !is.na(stress_region)) |>
+  group_by(gid_1) |> summarise(pays_sec = first(sec_aq(bws_cat_pays)), region_sec = first(sec_aq(bws_cat)), sites = n(), .groups = "drop")
+t_reg <- table(factor(par_region$pays_sec, c(FALSE, TRUE)), factor(par_region$region_sec, c(FALSE, TRUE)))
+mcn_regions <- list(n = nrow(par_region), p_pays = 100 * mean(par_region$pays_sec), p_reg = 100 * mean(par_region$region_sec),
+                    caches = t_reg["FALSE", "TRUE"], inverse = t_reg["TRUE", "FALSE"], p = mcnemar.test(t_reg)$p.value)
 
 score_cat <- function(x) ifelse(is.na(x), NA, ifelse(x < 0, -1, pmin(4, floor(x))))
 osm <- osm |> mutate(stress_2030 = cat_aq(score_cat(bws_2030)), stress_2050 = cat_aq(score_cat(bws_2050)))
@@ -286,6 +364,41 @@ co2 <- panel |> filter(year >= 2019) |> group_by(iso3) |>
 pays <- pays |> left_join(secteurs, by = "iso3") |> left_join(sites_stress, by = "iso3") |>
   left_join(co2, by = "iso3") |> left_join(aq_pays, by = "iso3") |>
   mutate(stress_pays_aq = cat_aq(bws_cat_pays))
+
+# --- 8.2 bis. ACM (analyse des correspondances multiples) sur les mêmes 61 pays -----
+# Chaque indicateur est découpé en 3 classes (terciles ou seuils lisibles) ; famille CAH en supplémentaire.
+tercile <- function(x, noms) cut(x, quantile(x, c(0, 1/3, 2/3, 1), na.rm = TRUE), labels = noms, include.lowest = TRUE)
+base_acm <- base_acp |>
+  left_join(pays |> select(iso3, bws_cat_pays, pct_sites_region_stress), by = "iso3") |>
+  left_join(classes |> select(iso3, nom_classe), by = "iso3") |>
+  transmute(country,
+            Parc = cut(n_dc, c(9, 29, 99, Inf), labels = c("Parc : 10 à 29 sites", "Parc : 30 à 99", "Parc : 100 et plus")),
+            Stress = factor(ifelse(is.na(bws_cat_pays), NA, ifelse(bws_cat_pays <= 1, "Stress pays : faible (< 20 %)",
+                            ifelse(bws_cat_pays == 2, "Stress pays : moyen (20-40 %)", "Stress pays : élevé (≥ 40 %)")))),
+            Richesse = tercile(pib_hab, c("PIB/hab. : bas", "PIB/hab. : moyen", "PIB/hab. : haut")),
+            Carbone = tercile(elec_emissions_intensity_gco2e_kwh, c("Électricité : peu carbonée", "Électricité : moyenne", "Électricité : très carbonée")),
+            Part_eau = tercile(part_central, c("Part eau DC : faible", "Part eau DC : moyenne", "Part eau DC : forte")),
+            Sites_secs = cut(pct_sites_region_stress, c(-Inf, 0, 49.999, Inf),
+                             labels = c("Sites en région sèche : aucun", "Sites en région sèche : < 50 %", "Sites en région sèche : ≥ 50 %")),
+            Famille = factor(nom_classe)) |>
+  filter(!is.na(Sites_secs), !is.na(Stress)) |>      # pays sans site géolocalisé : exclus de l'ACM (modalité < 5 %)
+  mutate(across(where(is.factor), droplevels)) |>
+  column_to_rownames("country")
+acm_exclus <- setdiff(base_acp$country, rownames(base_acm))
+acm_effectifs <- bind_rows(lapply(names(base_acm), function(v) tibble(variable = v, modalite = names(table(base_acm[[v]])),
+                                                                      n = as.integer(table(base_acm[[v]]))))) |>
+  mutate(pct = 100 * n / nrow(base_acm))
+acm <- MCA(base_acm, quali.sup = which(names(base_acm) == "Famille"), graph = FALSE, ncp = 5)
+acm_eig <- tibble(axe = paste("Axe", seq_len(nrow(acm$eig))), inertie = acm$eig[, 2], cumul = acm$eig[, 3])
+acm_mod <- bind_rows(
+  tibble(modalite = rownames(acm$var$coord), dim1 = acm$var$coord[, 1], dim2 = acm$var$coord[, 2],
+         contrib1 = acm$var$contrib[, 1], contrib2 = acm$var$contrib[, 2], sup = FALSE),
+  tibble(modalite = rownames(acm$quali.sup$coord), dim1 = acm$quali.sup$coord[, 1], dim2 = acm$quali.sup$coord[, 2],
+         contrib1 = NA_real_, contrib2 = NA_real_, sup = TRUE)) |>
+  left_join(acm_effectifs |> select(modalite, n, variable), by = "modalite")
+acm_ind <- tibble(country = rownames(acm$ind$coord), dim1 = acm$ind$coord[, 1], dim2 = acm$ind$coord[, 2]) |>
+  left_join(classes |> select(country, nom_classe), by = "country")
+acm_eta2 <- tibble(variable = rownames(acm$var$eta2), axe1 = acm$var$eta2[, 1], axe2 = acm$var$eta2[, 2])
 
 # --- 8.3 Saisons : normales mensuelles 1991-2020 (Banque mondiale CCKP, CRU TS 4.08)
 cl <- fromJSON("donnees_brutes/climat_mensuel_cckp_1991_2020.json")$data
@@ -384,7 +497,13 @@ saveRDS(list(
   regions = regions, echelles = echelles, climat = climat, google = google, eu = eu,
   monde = monde, lab_aq = lab_aq, zones_2024 = zones_2024, validation = validation,
   refs_fr = refs_fr, backtest = backtest, futur_sites = futur_sites, secteurs_ts = secteurs_ts,
-  cah_arbre = cah$call$t$tree, acp_cor = acp$var$cor[, 1:3]
+  cah_arbre = cah$call$t$tree, acp_cor = acp$var$cor[, 1:3],
+  # Ajouts relecture du 24/11/2026
+  twh_monde = TWH_MONDE, gwh_site_zone = gwh_site_zone,
+  acp_contrib = acp_contrib, acp_cmp = acp_cmp, acp_asym = acp_asym, acp_exclus = acp_exclus, acp_kaiser = acp_kaiser,
+  cah_info = cah_info, cah_km = cah_km, cah_accord = cah_accord, cah_desc = cah_desc,
+  acm_eig = acm_eig, acm_mod = acm_mod, acm_ind = acm_ind, acm_eta2 = acm_eta2, acm_effectifs = acm_effectifs,
+  mcn_regions = mcn_regions, acm_exclus = acm_exclus
 ), "app/app_data.rds")
 cat("Sites OSM :", nrow(osm), "| % en région stress élevé/extrême :",
     round(100 * mean(osm$bws_cat >= 3, na.rm = TRUE), 1), "\n")
