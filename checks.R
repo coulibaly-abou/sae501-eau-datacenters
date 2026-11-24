@@ -46,9 +46,17 @@ print(d$scen_zone |> filter(horizon == 2035) |> select(zone, scenario, f_zone) |
 
 cat("\n== 6. Même facteur 2035 dans Usages et Demain (France, croissance centrale) ==\n")
 txt <- NULL; suppressMessages(shiny::testServer(shiny::shinyAppDir("app"), {
-  session$setInputs(horizon = 2024, scen = "central", coef = "central", pays_sel = "FRA", pays_us = "FRA", nav = "Usages")
+  session$setInputs(horizon = 2024, scen = "central", coef = 0.81, seuil = "3", pays_sel = "FRA", pays_us = "FRA", nav = "Usages")
   txt <<- list(usages = output$tendance_retenir, demain = output$frscen_retenir)
 }))
 fa <- regmatches(txt$usages, regexpr("×[0-9,]+", txt$usages)); fb <- regmatches(txt$demain, regexpr("centrale : ×[0-9,]+", txt$demain))
 cat("  Usages :", txt$usages, "\n  Demain :", txt$demain, "\n")
 ok(identical(fa, sub("centrale : ", "", fb)), sprintf("facteur de volume identique (%s)", fa))
+
+cat("\n== 7. Variante « capacité des sites IA » (Epoch AI) ==\n")
+cat(sprintf("  %d sites IA, %s GW de puissance IT, %d rattachés à une région\n", nrow(d$ia), f(sum(d$ia$mw_it) / 1000, 1), sum(!is.na(d$ia$region))))
+tot <- NULL; suppressMessages(shiny::testServer(shiny::shinyAppDir("app"), {
+  session$setInputs(horizon = 2024, scen = "central", coef = 0.81, seuil = "3", repartition = "capacite", fc = 0.7)
+  tot <<- c(capacite = sum(base_pays()$e0), couverture = output$couverture) }))
+cat(" ", tot[["couverture"]], "\n")
+ok(abs(as.numeric(tot[["capacite"]]) - 415) < 1e-6, "la variante capacité conserve 415 TWh")

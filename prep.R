@@ -365,11 +365,23 @@ pays <- pays |> left_join(secteurs, by = "iso3") |> left_join(sites_stress, by =
   left_join(co2, by = "iso3") |> left_join(aq_pays, by = "iso3") |>
   mutate(stress_pays_aq = cat_aq(bws_cat_pays))
 
+# --- 8.3 Saisons : normales mensuelles 1991-2020 (Banque mondiale CCKP, CRU TS 4.08)
+cl <- fromJSON("donnees_brutes/climat_mensuel_cckp_1991_2020.json")$data
+mk <- function(v) bind_rows(lapply(names(cl[[v]]), function(i)
+  tibble(iso3 = i, mois = as.integer(substr(names(cl[[v]][[i]]), 6, 7)), val = unlist(cl[[v]][[i]])))) |>
+  rename(!!v := val)
+climat <- mk("tas") |> inner_join(mk("pr"), by = c("iso3", "mois")) |>
+  group_by(iso3) |>
+  mutate(sensible = tas > mean(tas) & pr < mean(pr)) |> ungroup()
+
 # --- 8.2 bis. ACM (analyse des correspondances multiples) sur les mêmes 61 pays -----
 # Chaque indicateur est découpé en 3 classes (terciles ou seuils lisibles) ; famille CAH en supplémentaire.
 tercile <- function(x, noms) cut(x, quantile(x, c(0, 1/3, 2/3, 1), na.rm = TRUE), labels = noms, include.lowest = TRUE)
+# Zone climatique (normales 1991-2020) : température moyenne annuelle et pluie annuelle
+clim_an <- climat |> group_by(iso3) |> summarise(t_an = mean(tas), pluie_an = sum(pr), .groups = "drop")
 base_acm <- base_acp |>
   left_join(pays |> select(iso3, bws_cat_pays, pct_sites_region_stress), by = "iso3") |>
+  left_join(clim_an, by = "iso3") |>
   left_join(classes |> select(iso3, nom_classe), by = "iso3") |>
   transmute(country,
             Parc = cut(n_dc, c(9, 29, 99, Inf), labels = c("Parc : 10 à 29 sites", "Parc : 30 à 99", "Parc : 100 et plus")),
@@ -380,8 +392,10 @@ base_acm <- base_acp |>
             Part_eau = tercile(part_central, c("Part eau DC : faible", "Part eau DC : moyenne", "Part eau DC : forte")),
             Sites_secs = cut(pct_sites_region_stress, c(-Inf, 0, 49.999, Inf),
                              labels = c("Sites en région sèche : aucun", "Sites en région sèche : < 50 %", "Sites en région sèche : ≥ 50 %")),
+            Climat = factor(ifelse(t_an >= 20 & pluie_an < 600, "Climat : chaud et sec", ifelse(t_an >= 20, "Climat : chaud et humide",
+                            ifelse(t_an >= 10, "Climat : tempéré", "Climat : froid")))),
             Famille = factor(nom_classe)) |>
-  filter(!is.na(Sites_secs), !is.na(Stress)) |>      # pays sans site géolocalisé : exclus de l'ACM (modalité < 5 %)
+  filter(!is.na(Sites_secs), !is.na(Stress), !is.na(Climat)) |>      # pays sans site géolocalisé : exclus de l'ACM (modalité < 5 %)
   mutate(across(where(is.factor), droplevels)) |>
   column_to_rownames("country")
 acm_exclus <- setdiff(base_acp$country, rownames(base_acm))
@@ -399,15 +413,6 @@ acm_mod <- bind_rows(
 acm_ind <- tibble(country = rownames(acm$ind$coord), dim1 = acm$ind$coord[, 1], dim2 = acm$ind$coord[, 2]) |>
   left_join(classes |> select(country, nom_classe), by = "country")
 acm_eta2 <- tibble(variable = rownames(acm$var$eta2), axe1 = acm$var$eta2[, 1], axe2 = acm$var$eta2[, 2])
-
-# --- 8.3 Saisons : normales mensuelles 1991-2020 (Banque mondiale CCKP, CRU TS 4.08)
-cl <- fromJSON("donnees_brutes/climat_mensuel_cckp_1991_2020.json")$data
-mk <- function(v) bind_rows(lapply(names(cl[[v]]), function(i)
-  tibble(iso3 = i, mois = as.integer(substr(names(cl[[v]][[i]]), 6, 7)), val = unlist(cl[[v]][[i]])))) |>
-  rename(!!v := val)
-climat <- mk("tas") |> inner_join(mk("pr"), by = c("iso3", "mois")) |>
-  group_by(iso3) |>
-  mutate(sensible = tas > mean(tas) & pr < mean(pr)) |> ungroup()
 
 # --- 8.4 Sites Google : eau consommée mesurée par site (rapport environnemental 2026, données 2025)
 coords <- tribble(~site, ~lat, ~lon,
@@ -486,6 +491,68 @@ backtest <- bind_rows(
   tibble(modele = "ARIMA", pred = as.numeric(forecast(auto.arima(train, seasonal = FALSE, max.p = 2, max.q = 2), h = h_test)$mean))) |>
   group_by(modele) |> mutate(annee = tail(fr_obs$year, 3)) |> ungroup()
 
+# --- 8.7 Data centers IA : Epoch AI, « AI data centers » (CC BY 4.0, mis à jour le 23/11/2026, consulté le 24/11/2026)
+# 96 sites, puissance IT actuelle (MW, hors refroidissement), adresse et pays ; pas de coordonnées.
+# Rattachement à la région Aqueduct : État américain lu dans l'adresse (« , TX 79601 ») ; ailleurs, nom de province cherché dans l'adresse.
+ia_raw <- fread("donnees_brutes/epoch_ai_data_centers_2026-11-23.csv", encoding = "UTF-8") |> as_tibble()
+ia <- ia_raw |>
+  transmute(site = Name, mw_it = `Current power (MW)`, h100e = `Current H100 equivalents`, proprietaire = Owner,
+            pays_en = Country, adresse = Address,
+            iso3 = countrycode(Country, "country.name", "iso3c"),
+            pos_etat = regexpr("[A-Z]{2} [0-9]{5}", Address),
+            etat = ifelse(iso3 == "USA" & pos_etat > 0, substr(Address, pos_etat, pos_etat + 1), NA)) |>
+  select(-pos_etat) |>
+  mutate(etat = ifelse(!is.na(etat) & etat %in% state.abb, state.name[match(etat, state.abb)], NA))
+prov_ia <- prov |> select(gid_1, iso3, name_1 = region, bws_cat, bws_2030, bws_2050)
+ia$gid_1 <- sapply(seq_len(nrow(ia)), function(i) {
+  cand <- prov_ia |> filter(iso3 == ia$iso3[i])
+  if (!is.na(ia$etat[i])) return(cand$gid_1[match(ia$etat[i], cand$name_1)])
+  hit <- cand$gid_1[vapply(cand$name_1, function(n) !is.na(n) && nchar(n) > 3 && grepl(n, ia$adresse[i], fixed = TRUE), logical(1))]
+  if (length(hit) == 1) hit else NA_character_ })
+# Sites sans adresse exploitable : province déduite du nom du site ou de l'adresse (table manuelle, cas sans ambiguïté seulement)
+ia_manuel <- tribble(~site, ~motif,
+  "Google Mesa", "^Arizona$", "Stream Phoenix", "^Arizona$", "Google Kansas City East", "^Missouri$", "AWS New Albany", "^Ohio$",
+  "Google The Dalles", "^Oregon$", "Meta Huntsville", "^Alabama$", "Google Storey County", "^Nevada$", "CoreWeave Chester VA", "^Virginia$",
+  "CoreWeave Dalton 1 & 2", "^Georgia$", "CoreWeave Lancaster Greenfield site", "^Pennsylvania$", "OpenAI Stargate Michigan", "^Michigan$",
+  "OpenAI Stargate Milam", "^Texas$", "OpenAI Stargate New Mexico", "^New Mexico$", "OpenAI Stargate Wisconsin", "^Wisconsin$",
+  "Google Waltham Cross", "^England$", "VNET Bayin Ulanqab", "^Nei Mongol$", "Huawei Horinger", "^Nei Mongol$",
+  "Envision Galaxy Ulanqab", "^Nei Mongol$", "Huawei Wuhu", "^Anhui$", "Oracle Batam", "^Kepulauan Riau$",
+  "CoreWeave Norway", "^Vest-Agder$", "Microsoft Narvik Norway", "^Nordland$", "Nebius Mantsala", "^Southern Finland$",
+  "Southgate Melbourne", "^Victoria$", "Start Campus Sines Data Campus", "^Set", "Nscale Keflavik", "urnes$",
+  "DayOne Nusajaya", "^Johor$", "EcoDataCenter 2", "^Dalarna$")
+for (j in seq_len(nrow(ia_manuel))) {
+  i <- which(ia$site == ia_manuel$site[j] & is.na(ia$gid_1)); if (!length(i)) next
+  hit <- prov_ia$gid_1[prov_ia$iso3 == ia$iso3[i] & grepl(ia_manuel$motif[j], prov_ia$name_1)]
+  if (length(hit) == 1) ia$gid_1[i] <- hit
+}
+pos_region <- osm |> filter(!is.na(gid_1)) |> group_by(gid_1) |> summarise(lat = mean(lat), lon = mean(lon), .groups = "drop")
+ia <- ia |> left_join(prov_ia |> select(gid_1, name_1, bws_cat, bws_2030, bws_2050), by = "gid_1") |>
+  left_join(pos_region, by = "gid_1") |> left_join(aq_pays, by = "iso3") |>
+  mutate(region = traduire(fix_enc(name_1)), stress_region = cat_aq(bws_cat), stress_pays = cat_aq(bws_cat_pays),
+         stress_2030 = cat_aq(score_cat(bws_2030)), stress_2050 = cat_aq(score_cat(bws_2050)),
+         pays = coalesce(countrycode(iso3, "iso3c", "country.name.fr"), pays_en))
+cat("Sites IA :", nrow(ia), "| rattachés à une région :", sum(!is.na(ia$gid_1)), "| MW IT :", round(sum(ia$mw_it)), "
+")
+
+# Données brutes de l'ACP (l'application recalcule l'ACP avec ou sans log)
+acp_base <- base_acp |> select(country, iso3, all_of(vars_actives), part_central)
+
+# Dictionnaire des variables du tableau téléchargeable (onglet Sources)
+dictionnaire <- tribble(
+  ~variable, ~definition, ~unite, ~source, ~traitement,
+  "Pays", "Nom du pays", "", "Inventaire data-centres-worldwide", "Noms harmonisés (countrycode)",
+  "Data centers", "Nombre de data centers recensés", "sites", "Inventaire data-centres-worldwide (2024)", "Somme des lignes du pays",
+  "Électricité (TWh)", "Électricité des data centers pour l'année choisie", "TWh/an", "AIE, Energy and AI (2025)",
+  "IMPUTÉE : pays calés = valeur AIE ; autres = reste de la zone AIE réparti selon le nombre de sites ; après 2024, facteur de zone du scénario choisi (interpolé entre 2024, 2030 et 2035)",
+  "Eau consommée sur place (Mm³)", "Électricité × coefficient d'eau choisi", "millions de m³/an", "Arcep 2024 ; Rapport 1", "Calculée (dépend du coefficient)",
+  "Part de l'eau prélevée du pays (%)", "Eau consommée par les data centers / eau prélevée du pays", "%", "FAO AQUASTAT",
+  "Dénominateur = moyenne des prélèvements disponibles depuis 2015 (années manquantes ignorées) ; consommation comparée à un prélèvement : part minorée",
+  "Stress hydrique FAO (%)", "Prélèvements / ressources renouvelables (ODD 6.4.2)", "%", "FAO AQUASTAT", "Moyenne des années disponibles depuis 2015",
+  "Sites en région sèche (%)", "Part des sites géolocalisés situés dans une région au stress Aqueduct ≥ seuil choisi", "%", "OpenStreetMap (20/09/2026) × WRI Aqueduct 4.0",
+  "Sites rattachés à leur région (GADM) ; pays sans site géolocalisé = vide",
+  "Calé sur l'AIE", "Électricité fixée sur une valeur publiée (oui) ou répartie par nombre de sites (non)", "oui/non", "AIE", "",
+  "GWh par site", "Électricité 2024 / nombre de sites", "GWh/site", "Calcul", "Identique pour tous les pays non calés d'une même zone")
+
 # --- 9. Sauvegarde -------------------------------------------------------------
 dir.create("app", showWarnings = FALSE)
 saveRDS(list(
@@ -503,7 +570,10 @@ saveRDS(list(
   acp_contrib = acp_contrib, acp_cmp = acp_cmp, acp_asym = acp_asym, acp_exclus = acp_exclus, acp_kaiser = acp_kaiser,
   cah_info = cah_info, cah_km = cah_km, cah_accord = cah_accord, cah_desc = cah_desc,
   acm_eig = acm_eig, acm_mod = acm_mod, acm_ind = acm_ind, acm_eta2 = acm_eta2, acm_effectifs = acm_effectifs,
-  mcn_regions = mcn_regions, acm_exclus = acm_exclus
+  mcn_regions = mcn_regions, acm_exclus = acm_exclus, acp_base = acp_base, vars_log = vars_log, dictionnaire = dictionnaire,
+  fr_obs = fr_obs |> select(year, prelev_vol),
+  ia = ia |> select(site, mw_it, h100e, proprietaire, iso3, pays, adresse, etat, region, lat, lon, stress_region, stress_pays, stress_2030, stress_2050),
+  zones = zones
 ), "app/app_data.rds")
 cat("Sites OSM :", nrow(osm), "| % en région stress élevé/extrême :",
     round(100 * mean(osm$bws_cat >= 3, na.rm = TRUE), 1), "\n")
