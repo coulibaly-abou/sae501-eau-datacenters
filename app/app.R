@@ -8,11 +8,26 @@ library(shiny); library(bslib); library(bsicons); library(plotly); library(DT)
 library(dplyr); library(tidyr); library(leaflet); library(sf)
 
 options(DT.options = list(language = list(url = "https://cdn.datatables.net/plug-ins/1.13.6/i18n/fr-FR.json")))
+# Grands écrans : la variable CSS --k (1 ; 1,3 ; 1,6 selon la largeur de la fenêtre) agrandit
+# la hauteur des graphiques et des cartes, et le texte des graphiques plotly (voir le CSS plus bas).
+hauteur_k <- function(h) if (is.character(h) && grepl("^[0-9.]+px$", h)) sprintf("calc(%s * var(--k, 1))", h) else h
+plotlyOutput <- function(outputId, width = "100%", height = "400px", ...) plotly::plotlyOutput(outputId, width, hauteur_k(height), ...)
+leafletOutput <- function(outputId, width = "100%", height = 400, ...)
+  leaflet::leafletOutput(outputId, width, hauteur_k(if (is.numeric(height)) paste0(height, "px") else height), ...)
+JS_TEXTE_K <- "function(el){
+  var k = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--k')) || 1;
+  if (k <= 1) return;
+  var lay = JSON.parse(JSON.stringify(el.layout || {}));
+  (function agrandir(o){ for (var c in o){ var v = o[c]; if (!v || typeof v !== 'object') continue;
+      if (/font$/i.test(c) && !Array.isArray(v)) v.size = (v.size || 12) * k; else agrandir(v); } })(lay);
+  lay.font = lay.font || {}; if (!(el.layout.font && el.layout.font.size)) lay.font.size = 12 * k;
+  Plotly.relayout(el, lay);
+}"
 # Graphiques sans barre d'outils
 renderPlotly <- function(expr, env = parent.frame(), quoted = FALSE) {
   force(env)
   if (!quoted) expr <- substitute(expr)
-  plotly::renderPlotly(plotly::config(eval(expr, env), displayModeBar = FALSE, locale = "fr"), quoted = FALSE)
+  plotly::renderPlotly(htmlwidgets::onRender(plotly::config(eval(expr, env), displayModeBar = FALSE, locale = "fr"), JS_TEXTE_K), quoted = FALSE)
 }
 
 d <- readRDS("app_data.rds")
@@ -123,6 +138,17 @@ bloc <- function(titre, sortie, aide, retenir, h = "380px", plot = plotlyOutput)
 theme <- bs_theme(version = 5, bootswatch = "flatly", primary = "#1f6f8b", base_font = font_google("Inter")) |>
   bs_add_rules("
     body{font-size:15px;}
+    /* Grands écrans (salle, vidéoprojecteur haute résolution) : tout grandit */
+    :root{--k:1;}
+    @media (min-width:1700px){ :root{--k:1.3;} html{font-size:20px;} body{font-size:19px;} .container-fluid{max-width:none;} }
+    @media (min-width:2300px){ :root{--k:1.6;} html{font-size:24px;} body{font-size:23px;} }
+    @media (min-width:1700px){ .bande-logos img{height:calc(62px * var(--k)) !important;}
+      .hero-contenu{max-width:62rem !important;} .hero h1{font-size:4.2rem !important;white-space:nowrap;}
+      .chiffre{flex:1 1 15rem !important;max-width:22rem !important;} .chiffre .nb{font-size:2.6rem !important;white-space:nowrap;}
+      .reponses-grille{max-width:80rem !important;} .photo{height:calc(300px * var(--k)) !important;}
+      .card-header .shiny-input-container, .parcours .shiny-input-container{width:auto !important;min-width:14rem;}
+      .card-header .selectize-input{white-space:nowrap;}
+      .leaflet-container .info.legend, .leaflet-container .legend{font-size:calc(12px * var(--k)) !important;line-height:1.35 !important;}      .bslib-sidebar-layout{--_sidebar-width:calc(260px * var(--k)) !important;} }
     /* Barre de navigation */
     .navbar{padding:.55rem 1.4rem !important;background:linear-gradient(90deg,#123f52 0%,#1f6f8b 100%) !important;
             box-shadow:0 3px 14px rgba(0,0,0,.18);}
@@ -604,7 +630,7 @@ server <- function(input, output, session) {
     ligne <- function(lib, taux, coul, tend = NULL)
       div(class = "evo-ligne", div(class = "evo-lib", lib, if (!is.null(tend)) div(class = "evo-tend", tend)),
           div(class = "evo-val", style = paste0("color:", coul),
-              if (is.na(taux)) "n.d." else paste0(ifelse(taux >= 0.05, "+", ""), fmt(taux, 1), " %")))
+              if (is.na(taux)) "n.d." else { t1 <- round(taux, 1) + 0; paste0(ifelse(t1 > 0, "+", ""), fmt(t1, 1), " %") }))
     tend <- function(t) if (is.null(t)) "trop peu d'années pour le test" else
       if (isTRUE(t$constante)) "même valeur chaque année (chiffre officiel non actualisé)" else
       paste0(if (t$p.value < 0.05) (if (t$estimate > 0) "hausse nette" else "baisse nette") else "pas de tendance",
