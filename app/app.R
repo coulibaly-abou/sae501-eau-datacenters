@@ -417,7 +417,6 @@ ui <- page_navbar(
     div(class = "accueil",
       div(class = "bande-logos",
         tags$img(src = "logo_iut.png", alt = "IUT Perpignan Carcassonne Narbonne"),
-        span("BUT Science des données · SAÉ 5.EMS.01 · 2026-2027"),
         tags$img(src = "logo_upvd.png", alt = "Université de Perpignan Via Domitia")),
       div(class = "hero", style = "background:linear-gradient(180deg,rgba(8,30,44,.50) 0%,rgba(8,30,44,.80) 100%),url('photo_serveurs.jpg') center/cover no-repeat;",
         div(class = "hero-contenu",
